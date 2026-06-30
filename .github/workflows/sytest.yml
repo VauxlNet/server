@@ -1,0 +1,20 @@
+name: Matrix Spec Compliance
+on: [pull_request]
+
+jobs:
+  sytest:
+    runs-on: ubuntu-latest
+    continue-on-error: true  # don't block PRs until baseline established
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build server
+        run: cargo build --release -p vauxl-server
+      - name: Run Sytest
+        uses: matrix-org/sytest-action@v0
+        with:
+          server-binary: target/release/vauxl-server
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sytest-results
+          path: sytest-results.xml
