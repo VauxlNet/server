@@ -3686,10 +3686,12 @@ dependencies = [
 name = "vauxl-crypto"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "ed25519-dalek",
  "hkdf",
  "pqcrypto-kyber",
  "pqcrypto-traits",
+ "rand 0.8.6",
  "sha2",
  "thiserror 1.0.69",
  "tokio-test",

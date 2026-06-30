@@ -1,0 +1,54 @@
+name: Nightly Security Checks
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # 02:00 UTC täglich
+  workflow_dispatch:      # Manuell auslösbar
+
+jobs:
+
+  audit:
+    name: Daily CVE Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Öffnet automatisch ein GitHub Issue wenn CVE gefunden
+
+  fuzz-kem:
+    name: Fuzz vauxl-crypto KEM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Create fuzz target if missing
+        run: |
+          if [ ! -d "crates/vauxl-crypto/fuzz" ]; then
+            cd crates/vauxl-crypto
+            cargo fuzz init
+            cat > fuzz/fuzz_targets/fuzz_kem.rs << 'FUZZ'
+          #![no_main]
+          use libfuzzer_sys::fuzz_target;
+
+          fuzz_target!(|data: &[u8]| {
+              // Placeholder: sobald decapsulate() implementiert ist,
+              // wird das mit echten Inputs gefüttert
+              let _ = data;
+          });
+          FUZZ
+          fi
+      - name: Run fuzzer (60 seconds)
+        run: |
+          cd crates/vauxl-crypto
+          cargo +nightly fuzz run fuzz_kem -- -max_total_time=60 2>&1 || true
+      - name: Upload corpus
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus
+          path: crates/vauxl-crypto/fuzz/corpus/

@@ -1,14 +1,11 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! vauxl-crypto — Audit-Grenze für alle kryptographischen Operationen.
+//!
+//! Regeln für diesen Crate:
+//! - Keine anderen vauxl-* Crates als Abhängigkeit
+//! - Kein `unwrap()` oder `expect()` außerhalb von Tests
+//! - Alle Secrets implementieren `Zeroize` und werden beim Drop gelöscht
+//! - Kein unsafe code (durch workspace `unsafe_code = "forbid"` erzwungen)
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod kem;
+pub mod identity;
+pub mod error;

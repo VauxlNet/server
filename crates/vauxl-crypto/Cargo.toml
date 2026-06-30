@@ -14,6 +14,8 @@ zeroize         = { version = "1", features = ["derive"] }
 pqcrypto-kyber  = "0.8"
 pqcrypto-traits = "0.3"
 thiserror       = { workspace = true }
+rand            = "0.8"
+base64          = "0.22"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
