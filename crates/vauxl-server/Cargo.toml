@@ -1,0 +1,17 @@
+[package]
+name    = "vauxl-server"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio              = { workspace = true }
+axum               = { workspace = true }
+sqlx               = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+vauxl-matrix      = { path = "../vauxl-matrix" }
+vauxl-federation  = { path = "../vauxl-federation" }
+vauxl-identity    = { path = "../vauxl-identity" }
+vauxl-admin       = { path = "../vauxl-admin" }

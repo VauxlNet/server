@@ -1,0 +1,1 @@
+{"rustc":16696009966390864400,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[14146611207482898422,"build_script_build",false,14709453816463616277]],"local":[{"RerunIfChanged":{"output":"debug/build/ruma-client-api-b29ae464f0c40d5f/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/vauxl-server",
+    "crates/vauxl-matrix",
+    "crates/vauxl-federation",
+    "crates/vauxl-identity",
+    "crates/vauxl-crypto",
+    "crates/vauxl-media",
+    "crates/vauxl-admin",
+    "crates/vauxl-push",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio              = { version = "1", features = ["full"] }
+axum               = { version = "0.7" }
+sqlx               = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "migrate"] }
+ruma               = { version = "0.10", features = ["client-api", "federation-api", "events"] }
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror          = "1"
+anyhow             = "1"
+tokio-test         = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all      = "warn"
+pedantic = "warn"

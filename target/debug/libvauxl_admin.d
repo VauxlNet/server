@@ -1,0 +1,1 @@
+/home/jesper/Projects/VauxlNet/server/target/debug/libvauxl_admin.rlib: /home/jesper/Projects/VauxlNet/server/crates/vauxl-admin/src/lib.rs /home/jesper/Projects/VauxlNet/server/crates/vauxl-identity/src/lib.rs

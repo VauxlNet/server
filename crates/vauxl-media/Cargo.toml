@@ -1,0 +1,13 @@
+[package]
+name    = "vauxl-media"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio     = { workspace = true }
+axum      = { workspace = true }
+sqlx      = { workspace = true }
+serde     = { workspace = true }
+thiserror = { workspace = true }
+image     = "0.25"
