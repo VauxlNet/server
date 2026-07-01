@@ -1,0 +1,15 @@
+[server]
+server_name    = "localhost"
+listen_address = "0.0.0.0"
+port           = 8008
+
+[database]
+url = "postgres://vauxl:vauxl@localhost/vauxl?sslmode=disable"
+
+[redis]
+url = "redis://localhost:6379"
+
+[signing_key]
+# Path where the homeserver Ed25519 signing key is stored.
+# Generated automatically on first start if it doesn't exist.
+path = "data/signing.key"

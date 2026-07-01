@@ -33,3 +33,7 @@ temp.txt
 
 # OS
 Thumbs.db
+
+# Generated at runtime
+data/
+config/dev.toml
