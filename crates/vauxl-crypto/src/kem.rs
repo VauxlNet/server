@@ -1,12 +1,11 @@
-//! X-Wing Hybrid KEM: X25519 + CRYSTALS-Kyber-1024.
+//! X-Wing Hybrid KEM: X25519 + ML-KEM-1024 (CRYSTALS-Kyber, FIPS 203)
 //!
-//! X-Wing kombiniert klassisches ECDH (X25519) mit post-quanten KEM (Kyber-1024).
-//! Ein Session-Key wird nur kompromittiert, wenn BEIDE Algorithmen gebrochen werden.
-//!
-//! Referenz: https://www.ietf.org/archive/id/draft-connolly-cfrg-xwing-kem-00.html
+//! Migrated from pqcrypto-kyber to pqcrypto-mlkem (RUSTSEC-2024-0381).
 
 use hkdf::Hkdf;
-use pqcrypto_kyber::kyber1024;
+use pqcrypto_mlkem::mlkem1024;
+use pqcrypto_mlkem::mlkem1024::{PublicKey as KyberPublicKey, SecretKey as KyberSecretKey};
+// Traits must be in scope for .as_bytes() to work
 use pqcrypto_traits::kem::{Ciphertext, SharedSecret};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
@@ -27,58 +26,50 @@ impl SessionKey {
 /// Öffentlicher Schlüssel für die X-Wing KEM.
 pub struct XWingPublicKey {
     pub x25519: X25519PublicKey,
-    pub kyber: kyber1024::PublicKey,
+    pub mlkem:  KyberPublicKey,
 }
 
 /// Privater Schlüssel für die X-Wing KEM. Wird beim Drop sicher gelöscht.
 #[derive(ZeroizeOnDrop)]
 pub struct XWingSecretKey {
     #[zeroize(skip)]
-    pub kyber: kyber1024::SecretKey,
+    pub mlkem: KyberSecretKey,
 }
 
-/// Ciphertext der X-Wing KEM (enthält beide Teile).
+/// Ciphertext der X-Wing KEM.
 pub struct XWingCiphertext {
     pub x25519_ephemeral_pub: [u8; 32],
-    pub kyber_ciphertext: Vec<u8>,
+    pub mlkem_ciphertext:     Vec<u8>,
 }
 
 /// Generiert ein neues X-Wing-Schlüsselpaar.
 pub fn generate_xwing_keypair() -> (XWingPublicKey, XWingSecretKey) {
-    let (kyber_pk, kyber_sk) = kyber1024::keypair();
+    let (mlkem_pk, mlkem_sk) = mlkem1024::keypair();
 
-    // X25519-Schlüsselpaar — der public key wird aus dem secret abgeleitet
     let x25519_secret = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
     let x25519_public = X25519PublicKey::from(&x25519_secret);
+    let _ = x25519_secret;
 
-    // Hinweis: EphemeralSecret kann nicht gespeichert werden (by design).
-    // Für statische Schlüssel (Geräteidentität) wird x25519_dalek::StaticSecret verwendet.
-    // Hier demonstrieren wir nur die Public-Key-Seite.
-    let _ = x25519_secret; // consumed
-
-    let pk = XWingPublicKey {
-        x25519: x25519_public,
-        kyber: kyber_pk,
-    };
-    let sk = XWingSecretKey { kyber: kyber_sk };
+    let pk = XWingPublicKey { x25519: x25519_public, mlkem: mlkem_pk };
+    let sk = XWingSecretKey { mlkem: mlkem_sk };
     (pk, sk)
 }
 
 /// Kapselt einen Session-Key für den Empfänger (Sender-Seite).
-/// Gibt den Ciphertext und den gemeinsamen Session-Key zurück.
 pub fn encapsulate(recipient_pk: &XWingPublicKey) -> Result<(XWingCiphertext, SessionKey)> {
-    // Kyber-1024 KEM
-    let (kyber_ss, kyber_ct) = kyber1024::encapsulate(&recipient_pk.kyber);
+    // ML-KEM-1024 encapsulation
+    let (mlkem_ss, mlkem_ct) = mlkem1024::encapsulate(&recipient_pk.mlkem);
 
     // X25519 ECDH mit ephemerem Schlüssel
-    let x25519_ephemeral = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+    let x25519_ephemeral     = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
     let x25519_ephemeral_pub = X25519PublicKey::from(&x25519_ephemeral);
-    let x25519_ss = x25519_ephemeral.diffie_hellman(&recipient_pk.x25519);
+    let x25519_ss            = x25519_ephemeral.diffie_hellman(&recipient_pk.x25519);
 
-    // X-Wing Kombination via HKDF-SHA256
-    // IKM = kyber_ss || x25519_ss
-    let mut ikm = Vec::with_capacity(kyber_ss.as_bytes().len() + x25519_ss.as_bytes().len());
-    ikm.extend_from_slice(kyber_ss.as_bytes());
+    // X-Wing: IKM = mlkem_ss || x25519_ss, then HKDF-SHA256
+    let mut ikm = Vec::with_capacity(
+        mlkem_ss.as_bytes().len() + x25519_ss.as_bytes().len()
+    );
+    ikm.extend_from_slice(mlkem_ss.as_bytes());
     ikm.extend_from_slice(x25519_ss.as_bytes());
 
     let hk = Hkdf::<Sha256>::new(None, &ikm);
@@ -88,7 +79,7 @@ pub fn encapsulate(recipient_pk: &XWingPublicKey) -> Result<(XWingCiphertext, Se
 
     let ct = XWingCiphertext {
         x25519_ephemeral_pub: *x25519_ephemeral_pub.as_bytes(),
-        kyber_ciphertext: kyber_ct.as_bytes().to_vec(),
+        mlkem_ciphertext:     mlkem_ct.as_bytes().to_vec(),
     };
 
     Ok((ct, SessionKey(session_key)))
@@ -109,7 +100,7 @@ mod tests {
         let (ct, session_key) = encapsulate(&pk).expect("encapsulation failed");
         assert_eq!(session_key.as_bytes().len(), 32);
         assert_eq!(ct.x25519_ephemeral_pub.len(), 32);
-        assert!(!ct.kyber_ciphertext.is_empty());
+        assert!(!ct.mlkem_ciphertext.is_empty());
     }
 
     #[test]
@@ -117,8 +108,6 @@ mod tests {
         let (pk, _sk) = generate_xwing_keypair();
         let (_, key1) = encapsulate(&pk).unwrap();
         let (_, key2) = encapsulate(&pk).unwrap();
-        // Zwei Encapsulations mit demselben Public Key
-        // müssen verschiedene Session Keys ergeben (Ephemerität)
         assert_ne!(key1.as_bytes(), key2.as_bytes());
     }
 }

@@ -17,7 +17,6 @@ axum               = { version = "0.7" }
 sqlx               = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "migrate"] }
 ruma               = { version = "0.10", features = ["client-api", "federation-api", "events"] }
 serde              = { version = "1", features = ["derive"] }
-serde_json         = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror          = "1"

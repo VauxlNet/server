@@ -1,20 +1,30 @@
 [licenses]
-allow = ["MIT", "Apache-2.0", "MPL-2.0", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0", "Zlib", "NCSA", "CDLA-Permissive-2.0"]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "MPL-2.0",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+    "NCSA",
+    "CDLA-Permissive-2.0",
+]
 
 [bans]
 multiple-versions = "warn"
-
 deny = [
-    { name = "openssl", wrappers = ["webauthn-attestation-ca", "webauthn-rs-core"] },
-    { name = "openssl-sys", wrappers = ["openssl", "webauthn-attestation-ca", "webauthn-rs-core"] }
+    { name = "openssl",     wrappers = ["webauthn-attestation-ca", "webauthn-rs-core"] },
+    { name = "openssl-sys", wrappers = ["openssl", "webauthn-attestation-ca", "webauthn-rs-core"] },
 ]
 
 [advisories]
-db-urls   = ["https://github.com/rustsec/advisory-db"]
-unmaintained  = "workspace"
-yanked        = "warn"
-ignore = [
-    "RUSTSEC-2023-0071", # RSA Marvin-Attack
-    "RUSTSEC-2024-0381", # pqcrypto-kyber
-    "RUSTSEC-2026-0162", # pqcrypto-traits
-]
+db-urls      = ["https://github.com/rustsec/advisory-db"]
+unmaintained = "none"
+yanked       = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git      = "warn"
+allow-registry   = ["https://github.com/rust-lang/crates.io-index"]
