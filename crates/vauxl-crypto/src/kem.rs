@@ -26,7 +26,7 @@ impl SessionKey {
 /// Öffentlicher Schlüssel für die X-Wing KEM.
 pub struct XWingPublicKey {
     pub x25519: X25519PublicKey,
-    pub mlkem:  KyberPublicKey,
+    pub mlkem: KyberPublicKey,
 }
 
 /// Privater Schlüssel für die X-Wing KEM. Wird beim Drop sicher gelöscht.
@@ -39,7 +39,7 @@ pub struct XWingSecretKey {
 /// Ciphertext der X-Wing KEM.
 pub struct XWingCiphertext {
     pub x25519_ephemeral_pub: [u8; 32],
-    pub mlkem_ciphertext:     Vec<u8>,
+    pub mlkem_ciphertext: Vec<u8>,
 }
 
 /// Generiert ein neues X-Wing-Schlüsselpaar.
@@ -50,7 +50,10 @@ pub fn generate_xwing_keypair() -> (XWingPublicKey, XWingSecretKey) {
     let x25519_public = X25519PublicKey::from(&x25519_secret);
     let _ = x25519_secret;
 
-    let pk = XWingPublicKey { x25519: x25519_public, mlkem: mlkem_pk };
+    let pk = XWingPublicKey {
+        x25519: x25519_public,
+        mlkem: mlkem_pk,
+    };
     let sk = XWingSecretKey { mlkem: mlkem_sk };
     (pk, sk)
 }
@@ -61,14 +64,12 @@ pub fn encapsulate(recipient_pk: &XWingPublicKey) -> Result<(XWingCiphertext, Se
     let (mlkem_ss, mlkem_ct) = mlkem1024::encapsulate(&recipient_pk.mlkem);
 
     // X25519 ECDH mit ephemerem Schlüssel
-    let x25519_ephemeral     = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+    let x25519_ephemeral = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
     let x25519_ephemeral_pub = X25519PublicKey::from(&x25519_ephemeral);
-    let x25519_ss            = x25519_ephemeral.diffie_hellman(&recipient_pk.x25519);
+    let x25519_ss = x25519_ephemeral.diffie_hellman(&recipient_pk.x25519);
 
     // X-Wing: IKM = mlkem_ss || x25519_ss, then HKDF-SHA256
-    let mut ikm = Vec::with_capacity(
-        mlkem_ss.as_bytes().len() + x25519_ss.as_bytes().len()
-    );
+    let mut ikm = Vec::with_capacity(mlkem_ss.as_bytes().len() + x25519_ss.as_bytes().len());
     ikm.extend_from_slice(mlkem_ss.as_bytes());
     ikm.extend_from_slice(x25519_ss.as_bytes());
 
@@ -79,7 +80,7 @@ pub fn encapsulate(recipient_pk: &XWingPublicKey) -> Result<(XWingCiphertext, Se
 
     let ct = XWingCiphertext {
         x25519_ephemeral_pub: *x25519_ephemeral_pub.as_bytes(),
-        mlkem_ciphertext:     mlkem_ct.as_bytes().to_vec(),
+        mlkem_ciphertext: mlkem_ct.as_bytes().to_vec(),
     };
 
     Ok((ct, SessionKey(session_key)))
