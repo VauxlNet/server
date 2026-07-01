@@ -1,0 +1,15 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071", # RSA Marvin-Attack
+    "RUSTSEC-2024-0381", # pqcrypto-kyber
+    "RUSTSEC-2026-0162", # pqcrypto-traits
+]
+
+[vulnerabilities]
+deny = [
+    "unmaintained",
+    "unsound",
+]
+
+[yanked]
+warn = true

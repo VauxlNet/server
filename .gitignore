@@ -1,1 +1,8 @@
 temp.txt
+
+# Lokale Umgebungsvariablen (nicht committen)
+.env.local
+.env.*.local
+
+# Arch Linux Docker Workaround Logs
+scripts/*.log
