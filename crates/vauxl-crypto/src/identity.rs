@@ -17,14 +17,16 @@ impl IdentityKeypair {
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
         let verifying_key = signing_key.verifying_key();
-        Self { signing_key, verifying_key }
+        Self {
+            signing_key,
+            verifying_key,
+        }
     }
 
     /// Gibt den öffentlichen Schlüssel als Base64-String zurück (Matrix-Format).
     pub fn public_key_base64(&self) -> String {
         use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD
-            .encode(self.verifying_key.as_bytes())
+        base64::engine::general_purpose::STANDARD.encode(self.verifying_key.as_bytes())
     }
 }
 

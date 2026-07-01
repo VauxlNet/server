@@ -6,6 +6,6 @@
 //! - Alle Secrets implementieren `Zeroize` und werden beim Drop gelöscht
 //! - Kein unsafe code (durch workspace `unsafe_code = "forbid"` erzwungen)
 
-pub mod kem;
-pub mod identity;
 pub mod error;
+pub mod identity;
+pub mod kem;
