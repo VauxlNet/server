@@ -10,6 +10,5 @@ deny = [
 
 [advisories]
 db-urls   = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
 unmaintained  = "workspace"
 yanked        = "warn"
