@@ -1,8 +1,35 @@
-temp.txt
+# Build output
+/target/
+**/target/
 
-# Lokale Umgebungsvariablen (nicht committen)
+# Cargo
+Cargo.lock
+!Cargo.lock
+
+# sqlx offline cache — commit this, don't ignore it
+# .sqlx/
+
+# Local environment files — never commit these
+.env
 .env.local
 .env.*.local
+*.env
 
-# Arch Linux Docker Workaround Logs
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
 scripts/*.log
+
+# Temp files
+temp.txt
+*.tmp
+*.temp
+
+# OS
+Thumbs.db
