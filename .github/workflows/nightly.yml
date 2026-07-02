@@ -10,12 +10,24 @@ jobs:
   audit:
     name: Daily CVE Audit
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v1
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Öffnet automatisch ein GitHub Issue wenn CVE gefunden
+          command: check advisories bans licenses
+
+
+#  deny:
+#    name: Security & Licenses (cargo-deny)
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@v4
+#      - uses: EmbarkStudios/cargo-deny-action@v2
+#      with:
+#       command: check advisories licenses bans sources
 
   fuzz-kem:
     name: Fuzz vauxl-crypto KEM
@@ -32,15 +44,15 @@ jobs:
             cd crates/vauxl-crypto
             cargo fuzz init
             cat > fuzz/fuzz_targets/fuzz_kem.rs << 'FUZZ'
-          #![no_main]
-          use libfuzzer_sys::fuzz_target;
+            #![no_main]
+            use libfuzzer_sys::fuzz_target;
 
-          fuzz_target!(|data: &[u8]| {
-              // Placeholder: sobald decapsulate() implementiert ist,
-              // wird das mit echten Inputs gefüttert
-              let _ = data;
-          });
-          FUZZ
+            fuzz_target!(|data: &[u8]| {
+                // Placeholder: sobald decapsulate() implementiert ist,
+                // wird das mit echten Inputs gefüttert
+                let _ = data;
+            });
+            FUZZ
           fi
       - name: Run fuzzer (60 seconds)
         run: |
