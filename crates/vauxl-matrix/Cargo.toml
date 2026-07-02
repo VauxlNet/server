@@ -21,6 +21,7 @@ hex           = "0.4"
 argon2        = "0.5"
 uuid          = { version = "1", features = ["v4"] }
 sha2          = "0.10"
+serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
