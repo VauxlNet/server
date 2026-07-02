@@ -3,6 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.dev
+      network: host
     ports:
       - "8008:8008"
     environment:
