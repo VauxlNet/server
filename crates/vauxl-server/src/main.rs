@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
         .await?;
 
     // Run migrations on startup
-    sqlx::migrate!("./migrations").run(&db).await?;
+    sqlx::migrate!("../../migrations").run(&db).await?;
     tracing::info!("Migrations applied");
 
     // ── Signing key ───────────────────────────────────────────────────────
