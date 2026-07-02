@@ -8,7 +8,7 @@
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::{json};
+use serde_json::json;
 
 use crate::{
     db::{create_device, create_user, generate_access_token, generate_device_id},
