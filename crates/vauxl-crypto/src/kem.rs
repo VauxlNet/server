@@ -9,7 +9,7 @@ use pqcrypto_mlkem::mlkem1024::PublicKey as KyberPublicKey;
 use pqcrypto_traits::kem::{Ciphertext, SecretKey as _, SharedSecret};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
-use zeroize::{Zeroizing, ZeroizeOnDrop};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{CryptoError, Result};
 
@@ -84,8 +84,8 @@ pub fn encapsulate(recipient_pk: &XWingPublicKey) -> Result<(XWingCiphertext, Se
 /// Entkapselt einen Session-Key aus dem Ciphertext (Empfaenger-Seite).
 pub fn decapsulate(sk: &XWingSecretKey, ct: &XWingCiphertext) -> Result<SessionKey> {
     // ML-KEM-1024 decapsulation
-    let mlkem_sk = mlkem1024::SecretKey::from_bytes(&sk.mlkem)
-        .map_err(|_| CryptoError::KemDecapsulation)?;
+    let mlkem_sk =
+        mlkem1024::SecretKey::from_bytes(&sk.mlkem).map_err(|_| CryptoError::KemDecapsulation)?;
     let mlkem_ct = mlkem1024::Ciphertext::from_bytes(&ct.mlkem_ciphertext)
         .map_err(|_| CryptoError::KemDecapsulation)?;
     let mlkem_ss = mlkem1024::decapsulate(&mlkem_ct, &mlkem_sk);

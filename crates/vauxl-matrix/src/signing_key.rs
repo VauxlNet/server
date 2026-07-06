@@ -74,7 +74,9 @@ fn save_key(path: &Path, key: &SigningKey) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options.open(path).context("Failed to create signing key file")?;
+    let mut file = options
+        .open(path)
+        .context("Failed to create signing key file")?;
     file.write_all(hex.as_bytes())
         .context("Failed to write signing key")?;
     Ok(())
