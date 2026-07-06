@@ -59,12 +59,24 @@ fn generate_key() -> SigningKey {
 }
 
 fn save_key(path: &Path, key: &SigningKey) -> Result<()> {
+    use std::io::Write as _;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("Failed to create signing key directory")?;
     }
     // Store as hex — simple, human-inspectable
     let hex = hex::encode(key.to_bytes());
-    std::fs::write(path, hex).context("Failed to write signing key")?;
+    // Private key material: create with owner-only permissions from the start
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).context("Failed to create signing key file")?;
+    file.write_all(hex.as_bytes())
+        .context("Failed to write signing key")?;
     Ok(())
 }
 

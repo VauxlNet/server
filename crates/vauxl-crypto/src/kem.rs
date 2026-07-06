@@ -4,12 +4,12 @@
 
 use hkdf::Hkdf;
 use pqcrypto_mlkem::mlkem1024;
-use pqcrypto_mlkem::mlkem1024::{PublicKey as KyberPublicKey, SecretKey as KyberSecretKey};
-// Traits must be in scope for .as_bytes() to work
-use pqcrypto_traits::kem::{Ciphertext, SharedSecret};
+use pqcrypto_mlkem::mlkem1024::PublicKey as KyberPublicKey;
+// Traits must be in scope for .as_bytes()/.from_bytes() to work
+use pqcrypto_traits::kem::{Ciphertext, SecretKey as _, SharedSecret};
 use sha2::Sha256;
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
-use zeroize::ZeroizeOnDrop;
+use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
+use zeroize::{Zeroizing, ZeroizeOnDrop};
 
 use crate::error::{CryptoError, Result};
 
@@ -29,11 +29,12 @@ pub struct XWingPublicKey {
     pub mlkem: KyberPublicKey,
 }
 
-/// Privater Schlüssel für die X-Wing KEM. Wird beim Drop sicher gelöscht.
+/// Privater Schlüssel für die X-Wing KEM. Beide Hälften werden beim Drop sicher gelöscht.
 #[derive(ZeroizeOnDrop)]
 pub struct XWingSecretKey {
-    #[zeroize(skip)]
-    pub mlkem: KyberSecretKey,
+    x25519: StaticSecret,
+    /// Rohe ML-KEM-1024 Secret-Key-Bytes; bei Bedarf rekonstruiert.
+    mlkem: Vec<u8>,
 }
 
 /// Ciphertext der X-Wing KEM.
@@ -46,15 +47,17 @@ pub struct XWingCiphertext {
 pub fn generate_xwing_keypair() -> (XWingPublicKey, XWingSecretKey) {
     let (mlkem_pk, mlkem_sk) = mlkem1024::keypair();
 
-    let x25519_secret = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+    let x25519_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let x25519_public = X25519PublicKey::from(&x25519_secret);
-    let _ = x25519_secret;
 
     let pk = XWingPublicKey {
         x25519: x25519_public,
         mlkem: mlkem_pk,
     };
-    let sk = XWingSecretKey { mlkem: mlkem_sk };
+    let sk = XWingSecretKey {
+        x25519: x25519_secret,
+        mlkem: mlkem_sk.as_bytes().to_vec(),
+    };
     (pk, sk)
 }
 
@@ -68,22 +71,44 @@ pub fn encapsulate(recipient_pk: &XWingPublicKey) -> Result<(XWingCiphertext, Se
     let x25519_ephemeral_pub = X25519PublicKey::from(&x25519_ephemeral);
     let x25519_ss = x25519_ephemeral.diffie_hellman(&recipient_pk.x25519);
 
-    // X-Wing: IKM = mlkem_ss || x25519_ss, then HKDF-SHA256
-    let mut ikm = Vec::with_capacity(mlkem_ss.as_bytes().len() + x25519_ss.as_bytes().len());
-    ikm.extend_from_slice(mlkem_ss.as_bytes());
-    ikm.extend_from_slice(x25519_ss.as_bytes());
-
-    let hk = Hkdf::<Sha256>::new(None, &ikm);
-    let mut session_key = [0u8; 32];
-    hk.expand(b"vauxl-vsx-v1", &mut session_key)
-        .map_err(|_| CryptoError::KeyDerivation)?;
+    let session_key = derive_session_key(mlkem_ss.as_bytes(), x25519_ss.as_bytes())?;
 
     let ct = XWingCiphertext {
         x25519_ephemeral_pub: *x25519_ephemeral_pub.as_bytes(),
         mlkem_ciphertext: mlkem_ct.as_bytes().to_vec(),
     };
 
-    Ok((ct, SessionKey(session_key)))
+    Ok((ct, session_key))
+}
+
+/// Entkapselt einen Session-Key aus dem Ciphertext (Empfaenger-Seite).
+pub fn decapsulate(sk: &XWingSecretKey, ct: &XWingCiphertext) -> Result<SessionKey> {
+    // ML-KEM-1024 decapsulation
+    let mlkem_sk = mlkem1024::SecretKey::from_bytes(&sk.mlkem)
+        .map_err(|_| CryptoError::KemDecapsulation)?;
+    let mlkem_ct = mlkem1024::Ciphertext::from_bytes(&ct.mlkem_ciphertext)
+        .map_err(|_| CryptoError::KemDecapsulation)?;
+    let mlkem_ss = mlkem1024::decapsulate(&mlkem_ct, &mlkem_sk);
+
+    // X25519 ECDH mit dem ephemeren Public Key des Senders
+    let sender_pub = X25519PublicKey::from(ct.x25519_ephemeral_pub);
+    let x25519_ss = sk.x25519.diffie_hellman(&sender_pub);
+
+    derive_session_key(mlkem_ss.as_bytes(), x25519_ss.as_bytes())
+}
+
+/// X-Wing: IKM = mlkem_ss || x25519_ss, dann HKDF-SHA256.
+fn derive_session_key(mlkem_ss: &[u8], x25519_ss: &[u8]) -> Result<SessionKey> {
+    let mut ikm = Zeroizing::new(Vec::with_capacity(mlkem_ss.len() + x25519_ss.len()));
+    ikm.extend_from_slice(mlkem_ss);
+    ikm.extend_from_slice(x25519_ss);
+
+    let hk = Hkdf::<Sha256>::new(None, &ikm);
+    let mut session_key = [0u8; 32];
+    hk.expand(b"vauxl-vsx-v1", &mut session_key)
+        .map_err(|_| CryptoError::KeyDerivation)?;
+
+    Ok(SessionKey(session_key))
 }
 
 #[cfg(test)]
@@ -110,5 +135,25 @@ mod tests {
         let (_, key1) = encapsulate(&pk).unwrap();
         let (_, key2) = encapsulate(&pk).unwrap();
         assert_ne!(key1.as_bytes(), key2.as_bytes());
+    }
+
+    #[test]
+    fn test_encapsulate_decapsulate_roundtrip() {
+        let (pk, sk) = generate_xwing_keypair();
+        let (ct, sender_key) = encapsulate(&pk).expect("encapsulation failed");
+        let recipient_key = decapsulate(&sk, &ct).expect("decapsulation failed");
+        assert_eq!(sender_key.as_bytes(), recipient_key.as_bytes());
+    }
+
+    #[test]
+    fn test_decapsulate_with_wrong_key_yields_different_session_key() {
+        let (pk, _sk) = generate_xwing_keypair();
+        let (_pk2, sk2) = generate_xwing_keypair();
+        let (ct, sender_key) = encapsulate(&pk).unwrap();
+        // ML-KEM ist IND-CCA: falscher Key liefert implizit einen anderen Shared Secret,
+        // keinen Fehler. Entscheidend ist, dass kein gleicher Session-Key entsteht.
+        if let Ok(wrong_key) = decapsulate(&sk2, &ct) {
+            assert_ne!(sender_key.as_bytes(), wrong_key.as_bytes());
+        }
     }
 }
