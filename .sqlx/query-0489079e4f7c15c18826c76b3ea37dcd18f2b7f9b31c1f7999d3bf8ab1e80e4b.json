@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT raw_event\n            FROM   events\n            WHERE  room_id   = $1\n            AND    state_key IS NULL\n            ORDER  BY origin_ts DESC\n            LIMIT  50\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "raw_event",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0489079e4f7c15c18826c76b3ea37dcd18f2b7f9b31c1f7999d3bf8ab1e80e4b"
+}

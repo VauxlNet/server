@@ -23,6 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror          = "1"
 anyhow             = "1"
 tokio-test         = "0.4"
+redis = { version = "0.27.6", features = ["aio", "tokio-comp"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

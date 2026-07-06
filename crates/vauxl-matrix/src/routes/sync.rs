@@ -1,0 +1,168 @@
+//! GET /_matrix/client/v3/sync
+//!
+//! The heartbeat of the Matrix protocol. Clients call this in a loop.
+//!
+//! Query parameters:
+//!   since    — token from previous sync (empty = initial sync)
+//!   timeout  — milliseconds to wait for new events (long-polling)
+//!   filter   — filter ID or inline filter JSON (ignored for now)
+
+use axum::{
+    extract::{Query, State},
+    Json,
+};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use tokio::time::{sleep, Duration};
+
+use crate::{
+    auth::AuthenticatedUser,
+    db::sync::{get_room_state, get_room_timeline, get_user_rooms},
+    error::MatrixError,
+    state::SharedState,
+    sync_token::{get_next_batch, parse_since},
+};
+
+#[derive(Debug, Deserialize)]
+pub struct SyncQuery {
+    pub since: Option<String>,
+    pub timeout: Option<u64>,   // milliseconds
+    pub filter: Option<String>, // ignored in MVP
+    #[serde(rename = "full_state")]
+    pub full_state: Option<bool>,
+}
+
+pub async fn sync(
+    State(state): State<SharedState>,
+    auth: AuthenticatedUser,
+    Query(query): Query<SyncQuery>,
+) -> Result<Json<Value>, MatrixError> {
+    let since_pos = parse_since(query.since.as_deref());
+    let timeout = query.timeout.unwrap_or(0).min(30_000); // cap at 30s
+
+    // Long-polling: if client asks to wait and this is an incremental sync,
+    // hold the connection for up to `timeout` ms.
+    // For MVP we do a simple sleep — a real implementation would use
+    // tokio::sync::watch channels to wake immediately when events arrive.
+    if timeout > 0 && since_pos > 0 {
+        sleep(Duration::from_millis(timeout.min(5_000))).await;
+    }
+
+    // Build the sync response
+    let response = build_sync_response(&state, &auth.user_id, since_pos).await?;
+
+    Ok(Json(response))
+}
+
+async fn build_sync_response(
+    state: &SharedState,
+    user_id: &str,
+    since_pos: u64,
+) -> Result<Value, MatrixError> {
+    // Get next_batch token — do this first so we don't miss events
+    // that arrive while we're building the response
+    let redis = state.redis.clone();
+    let next_batch = get_next_batch(&redis, user_id).await?;
+
+    // Get all rooms the user is in
+    let rooms = get_user_rooms(&state.db, user_id).await?;
+
+    let mut join_rooms: HashMap<String, Value> = HashMap::new();
+    let mut invite_rooms: HashMap<String, Value> = HashMap::new();
+
+    for (room_id, membership) in rooms {
+        match membership.as_str() {
+            "join" => {
+                let room = build_joined_room(&state.db, &room_id, since_pos).await?;
+                join_rooms.insert(room_id, room);
+            }
+            "invite" => {
+                let room = build_invited_room(&state.db, &room_id, user_id).await?;
+                invite_rooms.insert(room_id, room);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(json!({
+        "next_batch":    next_batch,
+        "rooms": {
+            "join":   join_rooms,
+            "invite": invite_rooms,
+            "leave":  {}
+        },
+        "presence":      { "events": [] },
+        "account_data":  { "events": [] },
+        "to_device":     { "events": [] },
+        "device_lists":  {
+            "changed": [],
+            "left":    []
+        },
+        "device_one_time_keys_count": {}
+    }))
+}
+
+async fn build_joined_room(
+    pool: &sqlx::PgPool,
+    room_id: &str,
+    since: u64,
+) -> Result<Value, MatrixError> {
+    let state_events = get_room_state(pool, room_id).await?;
+    let timeline_events = get_room_timeline(pool, room_id, since).await?;
+
+    let limited = timeline_events.len() >= 50;
+
+    Ok(json!({
+        "summary": {
+            "m.heroes":              [],
+            "m.joined_member_count": 0,  // filled in by future presence work
+            "m.invited_member_count": 0
+        },
+        "state": {
+            "events": state_events
+        },
+        "timeline": {
+            "events":    timeline_events,
+            "limited":   limited,
+            "prev_batch": format!("s0_{}", since)
+        },
+        "ephemeral":    { "events": [] },
+        "account_data": { "events": [] },
+        "unread_notifications": {
+            "highlight_count":    0,
+            "notification_count": 0
+        }
+    }))
+}
+
+async fn build_invited_room(
+    pool: &sqlx::PgPool,
+    room_id: &str,
+    user_id: &str,
+) -> Result<Value, MatrixError> {
+    // For invited rooms, return only the invite event itself
+    let invite_event = sqlx::query!(
+        r#"
+        SELECT raw_event FROM events
+        WHERE  room_id   = $1
+        AND    event_type = 'm.room.member'
+        AND    state_key  = $2
+        ORDER  BY origin_ts DESC
+        LIMIT  1
+        "#,
+        room_id,
+        user_id,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(MatrixError::from)?
+    .and_then(|r| serde_json::from_value(r.raw_event).ok())
+    .unwrap_or(json!({}));
+
+    Ok(json!({
+        "invite_state": {
+            "events": [invite_event]
+        }
+    }))
+}

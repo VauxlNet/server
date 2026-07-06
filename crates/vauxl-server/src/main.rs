@@ -14,6 +14,7 @@ use vauxl_matrix::{
     routes::{
         login::{get_login_flows, login},
         register::register,
+        sync::sync,
     },
     signing_key::HomeserverSigningKey,
     state::AppState,
@@ -43,7 +44,7 @@ async fn main() -> Result<()> {
         "Starting Vauxl homeserver"
     );
 
-    // ── Database pool ─────────────────────────────────────────────────────
+    // ── Database ──────────────────────────────────────────────────────────
     let db = PgPoolOptions::new()
         .max_connections(20)
         .connect(&cfg.database.url)
@@ -52,6 +53,11 @@ async fn main() -> Result<()> {
     sqlx::migrate!("../../migrations").run(&db).await?;
     tracing::info!("Migrations applied");
 
+    // ── Redis ─────────────────────────────────────────────────────────────
+    let redis_client = redis::Client::open(cfg.redis.url.as_str())?;
+    let redis = redis_client;
+    tracing::info!("Redis connected");
+
     // ── Signing key ───────────────────────────────────────────────────────
     let signing_key = HomeserverSigningKey::load_or_generate(&cfg.signing_key.path)?;
 
@@ -59,23 +65,25 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         config: cfg.clone(),
         db: db.clone(),
+        redis,
         signing_key,
     });
 
     // ── Router ────────────────────────────────────────────────────────────
     let app = Router::new()
-        // Discovery (unauthenticated)
+        // Discovery
         .route("/.well-known/matrix/client", get(well_known_client))
         .route("/.well-known/matrix/server", get(well_known_server))
         .route("/_matrix/key/v2/server", get(key_v2_server))
         .route("/_matrix/federation/v1/version", get(federation_version))
-        // Auth (unauthenticated)
+        // Auth
         .route("/_matrix/client/v3/register", post(register))
         .route("/_matrix/client/v3/login", get(get_login_flows).post(login))
+        // Sync
+        .route("/_matrix/client/v3/sync", get(sync))
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)
-        // Inject DB pool into request extensions for auth middleware
         .layer(middleware::from_fn_with_state(db, inject_db));
 
     let addr = format!("{}:{}", cfg.server.listen_address, cfg.server.port);

@@ -6,4 +6,5 @@ pub mod middleware;
 pub mod routes;
 pub mod signing_key;
 pub mod state;
+pub mod sync_token;
 pub mod well_known;

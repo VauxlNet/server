@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT e.raw_event\n        FROM   room_state rs\n        JOIN   events e ON e.event_id = rs.event_id\n        WHERE  rs.room_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "raw_event",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ee91a55f8e1fbef95ea29956fa7b223ed08ad83955988d56ca1227784d295192"
+}

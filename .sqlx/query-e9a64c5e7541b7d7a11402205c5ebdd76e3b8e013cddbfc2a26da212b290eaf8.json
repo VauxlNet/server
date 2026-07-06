@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT room_id, membership\n        FROM   room_members\n        WHERE  user_id = $1\n        AND    membership IN ('join', 'invite')\n        ORDER  BY room_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "membership",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e9a64c5e7541b7d7a11402205c5ebdd76e3b8e013cddbfc2a26da212b290eaf8"
+}
