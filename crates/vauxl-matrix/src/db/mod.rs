@@ -92,3 +92,9 @@ pub fn generate_access_token() -> (String, String) {
     let hash = format!("{:x}", Sha256::digest(token.as_bytes()));
     (token, hash)
 }
+pub mod rooms;
+
+pub use rooms::{
+    assert_joined, create_room_with_state, generate_event_id, get_full_room_state, put_room_event,
+    put_room_state_event,
+};

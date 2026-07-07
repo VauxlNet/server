@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_state (room_id, event_type, state_key, event_id)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (room_id, event_type, state_key)\n            DO UPDATE SET event_id = EXCLUDED.event_id\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e0c47a7267864034bb236f8fed11a29d76da6347d48627d405f91456a75b7e31"
+}

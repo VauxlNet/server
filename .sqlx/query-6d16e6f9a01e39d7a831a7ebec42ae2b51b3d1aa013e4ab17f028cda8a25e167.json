@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO one_time_keys (user_id, device_id, key_id, key_json)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (user_id, device_id, key_id) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6d16e6f9a01e39d7a831a7ebec42ae2b51b3d1aa013e4ab17f028cda8a25e167"
+}

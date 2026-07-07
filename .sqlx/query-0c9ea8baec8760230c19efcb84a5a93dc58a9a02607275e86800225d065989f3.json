@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE devices\n        SET    keys_json = $3\n        WHERE  user_id   = $1\n        AND    device_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0c9ea8baec8760230c19efcb84a5a93dc58a9a02607275e86800225d065989f3"
+}

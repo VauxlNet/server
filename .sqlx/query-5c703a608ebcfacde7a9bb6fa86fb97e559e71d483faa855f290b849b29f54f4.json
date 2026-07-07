@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            split_part(key_id, ':', 1) AS algorithm,\n            COUNT(*) AS count\n        FROM one_time_keys\n        WHERE user_id   = $1\n        AND   device_id = $2\n        AND   claimed   = FALSE\n        GROUP BY split_part(key_id, ':', 1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "algorithm",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "5c703a608ebcfacde7a9bb6fa86fb97e559e71d483faa855f290b849b29f54f4"
+}

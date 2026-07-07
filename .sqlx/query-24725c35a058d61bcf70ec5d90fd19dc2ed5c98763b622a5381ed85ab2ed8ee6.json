@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE one_time_keys\n        SET    claimed = TRUE\n        WHERE  ctid = (\n            SELECT ctid FROM one_time_keys\n            WHERE  user_id   = $1\n            AND    device_id = $2\n            AND    key_id LIKE $3\n            AND    claimed   = FALSE\n            ORDER  BY created_at ASC\n            LIMIT  1\n            FOR    UPDATE SKIP LOCKED\n        )\n        RETURNING key_id, key_json\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "key_json",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "24725c35a058d61bcf70ec5d90fd19dc2ed5c98763b622a5381ed85ab2ed8ee6"
+}

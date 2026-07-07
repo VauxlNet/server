@@ -1,13 +1,12 @@
 use anyhow::Result;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use vauxl_matrix::routes::keys::{claim_keys, query_keys, upload_keys};
 
 use vauxl_matrix::{
     config::AppConfig,
@@ -20,6 +19,13 @@ use vauxl_matrix::{
     signing_key::HomeserverSigningKey,
     state::AppState,
     well_known::{federation_version, key_v2_server, well_known_client, well_known_server},
+};
+
+use vauxl_matrix::routes::keys::{claim_keys, query_keys, upload_keys};
+
+use vauxl_matrix::routes::rooms::{
+    create_room, get_room_members, get_room_state, send_message_event, send_state_event,
+    send_state_event_no_key,
 };
 
 #[tokio::main]
@@ -86,6 +92,28 @@ async fn main() -> Result<()> {
         .route("/_matrix/client/v3/keys/upload", post(upload_keys))
         .route("/_matrix/client/v3/keys/query", post(query_keys))
         .route("/_matrix/client/v3/keys/claim", post(claim_keys))
+        // Rooms
+        .route("/_matrix/client/v3/createRoom", post(create_room))
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/state",
+            get(get_room_state),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/members",
+            get(get_room_members),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/state/:eventType",
+            put(send_state_event_no_key),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey",
+            put(send_state_event),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId",
+            put(send_message_event),
+        )
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)
