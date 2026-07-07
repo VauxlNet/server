@@ -98,3 +98,9 @@ pub use rooms::{
     assert_joined, create_room_with_state, generate_event_id, get_full_room_state, put_room_event,
     put_room_state_event,
 };
+pub mod membership;
+
+pub use membership::{
+    get_join_rule, get_membership, resolve_room_alias, room_exists, set_membership,
+    store_invite_notification,
+};

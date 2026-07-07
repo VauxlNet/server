@@ -12,20 +12,22 @@ use vauxl_matrix::{
     config::AppConfig,
     middleware::inject_db,
     routes::{
+        keys::{claim_keys, query_keys, upload_keys},
         login::{get_login_flows, login},
+        membership::{
+            ban_from_room, invite_to_room, join_room, join_room_by_id_or_alias, kick_from_room,
+            leave_room,
+        },
         register::register,
+        rooms::{
+            create_room, get_room_members, get_room_state, send_message_event, send_state_event,
+            send_state_event_no_key,
+        },
         sync::sync,
     },
     signing_key::HomeserverSigningKey,
     state::AppState,
     well_known::{federation_version, key_v2_server, well_known_client, well_known_server},
-};
-
-use vauxl_matrix::routes::keys::{claim_keys, query_keys, upload_keys};
-
-use vauxl_matrix::routes::rooms::{
-    create_room, get_room_members, get_room_state, send_message_event, send_state_event,
-    send_state_event_no_key,
 };
 
 #[tokio::main]
@@ -114,6 +116,22 @@ async fn main() -> Result<()> {
             "/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId",
             put(send_message_event),
         )
+        // Membership
+        .route(
+            "/_matrix/client/v3/join/:roomIdOrAlias",
+            post(join_room_by_id_or_alias),
+        )
+        .route("/_matrix/client/v3/rooms/:roomId/join", post(join_room))
+        .route("/_matrix/client/v3/rooms/:roomId/leave", post(leave_room))
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/invite",
+            post(invite_to_room),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/kick",
+            post(kick_from_room),
+        )
+        .route("/_matrix/client/v3/rooms/:roomId/ban", post(ban_from_room))
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT e.content->>'join_rule' AS join_rule\n        FROM   room_state rs\n        JOIN   events e ON e.event_id = rs.event_id\n        WHERE  rs.room_id    = $1\n        AND    rs.event_type = 'm.room.join_rules'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "join_rule",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5ae8283c4f5deead6509528b807fed001b1b2ff3516d7bf2720d2a15f350e3c7"
+}

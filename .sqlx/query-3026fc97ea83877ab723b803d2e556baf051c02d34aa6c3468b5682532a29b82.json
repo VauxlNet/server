@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT rs.room_id\n        FROM   room_state rs\n        JOIN   events e ON e.event_id = rs.event_id\n        WHERE  rs.event_type = 'm.room.canonical_alias'\n        AND    e.content->>'alias' = $1\n        LIMIT  1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3026fc97ea83877ab723b803d2e556baf051c02d34aa6c3468b5682532a29b82"
+}
