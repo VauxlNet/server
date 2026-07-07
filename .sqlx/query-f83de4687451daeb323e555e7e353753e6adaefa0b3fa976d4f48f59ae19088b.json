@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO to_device_messages (user_id, device_id, event_type, content)\n                SELECT $1, device_id, $2, $3\n                FROM   devices\n                WHERE  user_id = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f83de4687451daeb323e555e7e353753e6adaefa0b3fa976d4f48f59ae19088b"
+}

@@ -4,3 +4,4 @@ pub mod membership;
 pub mod register;
 pub mod rooms;
 pub mod sync;
+pub mod to_device;

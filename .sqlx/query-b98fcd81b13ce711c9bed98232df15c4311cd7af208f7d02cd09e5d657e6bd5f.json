@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO transaction_ids (user_id, device_id, txn_id, created_at)\n        VALUES ($1, $2, $3, NOW())\n        ON CONFLICT (user_id, device_id, txn_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b98fcd81b13ce711c9bed98232df15c4311cd7af208f7d02cd09e5d657e6bd5f"
+}

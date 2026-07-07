@@ -24,6 +24,7 @@ use vauxl_matrix::{
             send_state_event_no_key,
         },
         sync::sync,
+        to_device::send_to_device,
     },
     signing_key::HomeserverSigningKey,
     state::AppState,
@@ -132,6 +133,11 @@ async fn main() -> Result<()> {
             post(kick_from_room),
         )
         .route("/_matrix/client/v3/rooms/:roomId/ban", post(ban_from_room))
+        // To-device
+        .route(
+            "/_matrix/client/v3/sendToDevice/:eventType/:txnId",
+            put(send_to_device),
+        )
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)

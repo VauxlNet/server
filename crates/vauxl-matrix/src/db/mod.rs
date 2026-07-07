@@ -104,3 +104,6 @@ pub use membership::{
     get_join_rule, get_membership, resolve_room_alias, room_exists, set_membership,
     store_invite_notification,
 };
+pub mod to_device;
+
+pub use to_device::{check_and_store_txn, pop_to_device_messages, store_to_device_messages};

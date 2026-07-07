@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM to_device_messages\n        WHERE id IN (\n            SELECT id FROM to_device_messages\n            WHERE  user_id   = $1\n            AND    device_id = $2\n            ORDER  BY id ASC\n            LIMIT  100\n        )\n        RETURNING event_type, content\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "content",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "97cb11e05674a34f125f526706f40d786772819f0dbf962526d4d150c4971c25"
+}
