@@ -1,21 +1,24 @@
-//! Database helpers — user and device management.
+pub mod keys;
+pub mod sync;
 
+// Re-export commonly used functions from the top level
+pub use keys::{
+    claim_one_time_key, get_otk_counts, query_device_keys, store_one_time_keys, upsert_device_keys,
+};
+
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::MatrixError;
 
-/// Creates a new user row. Returns `MatrixError::UserInUse` if taken.
 pub async fn create_user(
     pool: &PgPool,
     user_id: &str,
     password_hash: Option<&str>,
 ) -> Result<(), MatrixError> {
     let result = sqlx::query!(
-        r#"
-        INSERT INTO users (user_id, password_hash)
-        VALUES ($1, $2)
-        "#,
+        "INSERT INTO users (user_id, password_hash) VALUES ($1, $2)",
         user_id,
         password_hash,
     )
@@ -31,23 +34,19 @@ pub async fn create_user(
     }
 }
 
-/// Looks up a user's password hash for login verification.
 pub async fn get_password_hash(
     pool: &PgPool,
     user_id: &str,
 ) -> Result<Option<String>, MatrixError> {
     let row = sqlx::query!(
         "SELECT password_hash FROM users WHERE user_id = $1 AND deactivated = FALSE",
-        user_id
+        user_id,
     )
     .fetch_optional(pool)
     .await?;
-
     Ok(row.and_then(|r| r.password_hash))
 }
 
-/// Creates a new device and stores an access token hash.
-/// Returns the plaintext access token (only time we see it).
 pub async fn create_device(
     pool: &PgPool,
     user_id: &str,
@@ -71,10 +70,7 @@ pub async fn create_device(
     .await?;
 
     sqlx::query!(
-        r#"
-        INSERT INTO access_tokens (token_hash, user_id, device_id)
-        VALUES ($1, $2, $3)
-        "#,
+        "INSERT INTO access_tokens (token_hash, user_id, device_id) VALUES ($1, $2, $3)",
         token_hash,
         user_id,
         device_id,
@@ -86,19 +82,13 @@ pub async fn create_device(
     Ok(())
 }
 
-/// Generates a unique device ID (8 uppercase hex chars).
 pub fn generate_device_id() -> String {
     let id = Uuid::new_v4().simple().to_string();
     id[..8].to_uppercase()
 }
 
-/// Generates a new access token and its SHA-256 hash.
-/// Returns (plaintext_token, hash).
 pub fn generate_access_token() -> (String, String) {
-    use sha2::{Digest, Sha256};
-
     let token = format!("vauxl_{}", Uuid::new_v4().simple());
     let hash = format!("{:x}", Sha256::digest(token.as_bytes()));
     (token, hash)
 }
-pub mod sync;

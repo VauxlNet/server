@@ -7,6 +7,7 @@ use axum::{
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use vauxl_matrix::routes::keys::{claim_keys, query_keys, upload_keys};
 
 use vauxl_matrix::{
     config::AppConfig,
@@ -81,6 +82,10 @@ async fn main() -> Result<()> {
         .route("/_matrix/client/v3/login", get(get_login_flows).post(login))
         // Sync
         .route("/_matrix/client/v3/sync", get(sync))
+        // Keys
+        .route("/_matrix/client/v3/keys/upload", post(upload_keys))
+        .route("/_matrix/client/v3/keys/query", post(query_keys))
+        .route("/_matrix/client/v3/keys/claim", post(claim_keys))
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)
