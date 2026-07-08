@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod event_signing;
 pub mod middleware;
 pub mod routes;
 pub mod signing_key;

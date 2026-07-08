@@ -95,8 +95,8 @@ pub fn generate_access_token() -> (String, String) {
 pub mod rooms;
 
 pub use rooms::{
-    assert_joined, create_room_with_state, generate_event_id, get_full_room_state, put_room_event,
-    put_room_state_event,
+    assert_joined, create_room_with_state, generate_event_id, get_full_room_state,
+    get_room_messages, put_room_event, put_room_state_event,
 };
 pub mod membership;
 

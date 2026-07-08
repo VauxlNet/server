@@ -36,8 +36,19 @@ pub async fn sync(
     let since_pos = parse_since(query.since.as_deref());
     let timeout = query.timeout.unwrap_or(0).min(30_000);
 
+    // Long-poll: subscribe to wake channel before checking for events
+    // so we don't miss an event that arrives between check and subscribe
     if timeout > 0 && since_pos > 0 {
-        sleep(Duration::from_millis(timeout.min(5_000))).await;
+        let mut wake_rx = state.wake_tx.subscribe();
+
+        tokio::select! {
+            // Wake immediately when any event arrives
+            _ = async {
+                let _ = wake_rx.recv().await;
+            } => {}
+            // Or time out after requested duration (capped at 30s)
+            _ = sleep(Duration::from_millis(timeout.min(30_000))) => {}
+        }
     }
 
     let response = build_sync_response(&state, &auth.user_id, &auth.device_id, since_pos).await?;
@@ -53,8 +64,6 @@ async fn build_sync_response(
 ) -> Result<Value, MatrixError> {
     let next_batch = get_next_batch(&state.redis, user_id).await?;
     let rooms = get_user_rooms(&state.db, user_id).await?;
-
-    // Fetch and drain pending to-device messages for this device
     let to_device_events = pop_to_device_messages(&state.db, user_id, device_id).await?;
 
     let mut join_rooms: HashMap<String, Value> = HashMap::new();
@@ -100,22 +109,16 @@ async fn build_joined_room(
 
     Ok(json!({
         "summary": {
-            "m.heroes":               [],
-            "m.joined_member_count":  0,
-            "m.invited_member_count": 0
+            "m.heroes": [], "m.joined_member_count": 0, "m.invited_member_count": 0
         },
         "state":    { "events": state_events },
         "timeline": {
-            "events":    timeline_events,
-            "limited":   limited,
+            "events": timeline_events, "limited": limited,
             "prev_batch": format!("s0_{}", since)
         },
         "ephemeral":    { "events": [] },
         "account_data": { "events": [] },
-        "unread_notifications": {
-            "highlight_count":    0,
-            "notification_count": 0
-        }
+        "unread_notifications": { "highlight_count": 0, "notification_count": 0 }
     }))
 }
 
@@ -127,11 +130,9 @@ async fn build_invited_room(
     let invite_event = sqlx::query!(
         r#"
         SELECT raw_event FROM events
-        WHERE  room_id    = $1
-        AND    event_type = 'm.room.member'
-        AND    state_key  = $2
-        ORDER  BY origin_ts DESC
-        LIMIT  1
+        WHERE  room_id = $1 AND event_type = 'm.room.member'
+        AND    state_key = $2
+        ORDER  BY origin_ts DESC LIMIT 1
         "#,
         room_id,
         user_id,
@@ -142,7 +143,5 @@ async fn build_invited_room(
     .and_then(|r| serde_json::from_value(r.raw_event).ok())
     .unwrap_or(json!({}));
 
-    Ok(json!({
-        "invite_state": { "events": [invite_event] }
-    }))
+    Ok(json!({ "invite_state": { "events": [invite_event] } }))
 }

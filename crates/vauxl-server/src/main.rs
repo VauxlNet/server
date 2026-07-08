@@ -20,14 +20,14 @@ use vauxl_matrix::{
         },
         register::register,
         rooms::{
-            create_room, get_room_members, get_room_state, send_message_event, send_state_event,
-            send_state_event_no_key,
+            create_room, get_room_members, get_room_messages_handler, get_room_state,
+            send_message_event, send_state_event, send_state_event_no_key,
         },
         sync::sync,
         to_device::send_to_device,
     },
     signing_key::HomeserverSigningKey,
-    state::AppState,
+    state::{AppState, WakeEvent},
     well_known::{federation_version, key_v2_server, well_known_client, well_known_server},
 };
 
@@ -72,11 +72,14 @@ async fn main() -> Result<()> {
     let signing_key = HomeserverSigningKey::load_or_generate(&cfg.signing_key.path)?;
 
     // ── Shared state ──────────────────────────────────────────────────────
+    let (wake_tx, _) = tokio::sync::broadcast::channel::<WakeEvent>(1024);
+
     let state = Arc::new(AppState {
         config: cfg.clone(),
         db: db.clone(),
         redis,
         signing_key,
+        wake_tx,
     });
 
     // ── Router ────────────────────────────────────────────────────────────
@@ -104,6 +107,10 @@ async fn main() -> Result<()> {
         .route(
             "/_matrix/client/v3/rooms/:roomId/members",
             get(get_room_members),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/messages",
+            get(get_room_messages_handler),
         )
         .route(
             "/_matrix/client/v3/rooms/:roomId/state/:eventType",

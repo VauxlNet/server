@@ -1,10 +1,11 @@
-//! Database queries for room join, leave, and invite operations.
+//! Database queries for room membership operations.
 
 use sqlx::PgPool;
 
-use crate::{db::rooms::put_room_state_event, error::MatrixError};
+use crate::{
+    db::rooms::put_room_state_event, error::MatrixError, signing_key::HomeserverSigningKey,
+};
 
-/// Returns the current membership of a user in a room, or None if not present.
 pub async fn get_membership(
     pool: &PgPool,
     room_id: &str,
@@ -20,7 +21,6 @@ pub async fn get_membership(
     Ok(row.map(|r| r.membership))
 }
 
-/// Returns the join_rules for a room ("public", "invite", etc.)
 pub async fn get_join_rule(pool: &PgPool, room_id: &str) -> Result<String, MatrixError> {
     let row = sqlx::query!(
         r#"
@@ -34,15 +34,12 @@ pub async fn get_join_rule(pool: &PgPool, room_id: &str) -> Result<String, Matri
     )
     .fetch_optional(pool)
     .await?;
-
     Ok(row
         .and_then(|r| r.join_rule)
         .unwrap_or_else(|| "invite".into()))
 }
 
-/// Resolves a room alias (#alias:server) to a room_id.
 pub async fn resolve_room_alias(pool: &PgPool, alias: &str) -> Result<Option<String>, MatrixError> {
-    // Aliases are stored as m.room.canonical_alias or m.room.aliases state events
     let row = sqlx::query!(
         r#"
         SELECT rs.room_id
@@ -56,11 +53,9 @@ pub async fn resolve_room_alias(pool: &PgPool, alias: &str) -> Result<Option<Str
     )
     .fetch_optional(pool)
     .await?;
-
     Ok(row.map(|r| r.room_id))
 }
 
-/// Returns whether a room exists.
 pub async fn room_exists(pool: &PgPool, room_id: &str) -> Result<bool, MatrixError> {
     let row = sqlx::query!("SELECT 1 AS exists FROM rooms WHERE room_id = $1", room_id,)
         .fetch_optional(pool)
@@ -68,8 +63,7 @@ pub async fn room_exists(pool: &PgPool, room_id: &str) -> Result<bool, MatrixErr
     Ok(row.is_some())
 }
 
-/// Writes an m.room.member event and updates room_members.
-/// Returns the event_id.
+#[allow(clippy::too_many_arguments)]
 pub async fn set_membership(
     pool: &PgPool,
     room_id: &str,
@@ -78,6 +72,7 @@ pub async fn set_membership(
     membership: &str,
     displayname: Option<&str>,
     server_name: &str,
+    signing_key: &HomeserverSigningKey,
 ) -> Result<String, MatrixError> {
     let content = serde_json::json!({
         "membership":  membership,
@@ -89,16 +84,15 @@ pub async fn set_membership(
         pool,
         room_id,
         "m.room.member",
-        user_id, // state_key = the user whose membership changed
+        user_id,
         sender,
         content,
         server_name,
+        signing_key,
     )
     .await
 }
 
-/// Stores a pending invite in the to_device_messages table so the
-/// invited user sees it on their next /sync.
 pub async fn store_invite_notification(
     pool: &PgPool,
     invitee_id: &str,
@@ -106,19 +100,16 @@ pub async fn store_invite_notification(
     inviter_id: &str,
 ) -> Result<(), MatrixError> {
     let content = serde_json::json!({
-        "room_id":   room_id,
-        "sender":    inviter_id,
-        "type":      "m.room.member",
-        "state_key": invitee_id,
-        "content":   { "membership": "invite" }
+        "room_id": room_id, "sender": inviter_id,
+        "type": "m.room.member", "state_key": invitee_id,
+        "content": {"membership": "invite"}
     });
 
     sqlx::query!(
         r#"
         INSERT INTO to_device_messages (user_id, device_id, event_type, content)
         SELECT $1, device_id, 'm.room.invite_notification', $2
-        FROM   devices
-        WHERE  user_id = $1
+        FROM   devices WHERE user_id = $1
         "#,
         invitee_id,
         content,

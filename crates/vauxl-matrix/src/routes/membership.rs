@@ -107,6 +107,7 @@ async fn join_room_inner(
         "join",
         None,
         server_name,
+        &state.signing_key,
     )
     .await?;
 
@@ -145,6 +146,7 @@ pub async fn leave_room(
         "leave",
         None,
         server_name,
+        &state.signing_key,
     )
     .await?;
 
@@ -192,6 +194,7 @@ pub async fn invite_to_room(
         "invite",
         None,
         server_name,
+        &state.signing_key,
     )
     .await?;
 
@@ -249,6 +252,7 @@ pub async fn kick_from_room(
         "leave",
         None,
         server_name,
+        &state.signing_key,
     )
     .await?;
 
@@ -289,6 +293,7 @@ pub async fn ban_from_room(
         "ban",
         None,
         server_name,
+        &state.signing_key,
     )
     .await?;
 
