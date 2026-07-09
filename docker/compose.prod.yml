@@ -1,0 +1,59 @@
+services:
+  vauxl:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    ports:
+      # Nur auf dem VPS lokal offen (für Nginx/Caddy)
+      - "127.0.0.1:8008:8008"
+    environment:
+      # Holt sich Passwörter aus der .env Datei
+      VAUXL_DATABASE__URL: postgres://${DB_USER}:${DB_PASSWORD}@db/${DB_NAME}?sslmode=disable
+      VAUXL_REDIS__URL: redis://cache:6379
+      RUST_LOG: vauxl_server=info
+    volumes:
+      - vauxl_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    # KEIN PORTS-BLOCK!
+    volumes: 
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # KEIN PORTS-BLOCK!
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+
+volumes:
+  pgdata: {}
+  vauxl_data: {}

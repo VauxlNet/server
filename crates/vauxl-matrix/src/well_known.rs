@@ -4,9 +4,20 @@ use serde_json::{json, Value};
 use crate::state::SharedState;
 
 pub async fn well_known_client(State(s): State<SharedState>) -> Json<Value> {
+    // Use http for local dev — Element Web rejects https:// when TLS is not configured
+    let scheme = if s.config.server.server_name.starts_with("localhost")
+        || s.config.server.server_name.starts_with("127.")
+    {
+        "http"
+    } else {
+        "https"
+    };
+
     Json(json!({
         "m.homeserver": {
-            "base_url": format!("https://{}", s.config.server.server_name)
+            "base_url": format!("{}://{}:{}", scheme,
+                s.config.server.server_name,
+                s.config.server.port)
         }
     }))
 }

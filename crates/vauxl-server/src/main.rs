@@ -6,7 +6,8 @@ use axum::{
 };
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tower_http::cors::{Any, CorsLayer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use vauxl_matrix::{
     config::AppConfig,
@@ -25,6 +26,7 @@ use vauxl_matrix::{
         },
         sync::sync,
         to_device::send_to_device,
+        versions::client_versions,
     },
     signing_key::HomeserverSigningKey,
     state::{AppState, WakeEvent},
@@ -82,6 +84,12 @@ async fn main() -> Result<()> {
         wake_tx,
     });
 
+    // ── Cors ────────────────────────────────────────────────────────────
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     // ── Router ────────────────────────────────────────────────────────────
     let app = Router::new()
         // Discovery
@@ -89,6 +97,7 @@ async fn main() -> Result<()> {
         .route("/.well-known/matrix/server", get(well_known_server))
         .route("/_matrix/key/v2/server", get(key_v2_server))
         .route("/_matrix/federation/v1/version", get(federation_version))
+        .route("/_matrix/client/versions", get(client_versions))
         // Auth
         .route("/_matrix/client/v3/register", post(register))
         .route("/_matrix/client/v3/login", get(get_login_flows).post(login))
@@ -148,7 +157,8 @@ async fn main() -> Result<()> {
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)
-        .layer(middleware::from_fn_with_state(db, inject_db));
+        .layer(middleware::from_fn_with_state(db, inject_db))
+        .layer(cors);
 
     let addr = format!("{}:{}", cfg.server.listen_address, cfg.server.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

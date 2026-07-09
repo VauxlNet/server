@@ -3,13 +3,11 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.dev
-      network: host
-    ports:
-      - "8008:8008"
+    network_mode: "host" # Für lokales SQLx Migrate
     environment:
-      VAUXL_DATABASE__URL: postgres://vauxl:vauxl@db/vauxl?sslmode=disable
-      VAUXL_REDIS__URL: redis://cache:6379
-      RUST_LOG: vauxl_server=debug
+      VAUXL_DATABASE__URL: postgres://vauxl:vauxl@127.0.0.1/vauxl?sslmode=disable
+      VAUXL_REDIS__URL: redis://127.0.0.1:6379
+      RUST_LOG: vauxl_server=trace,tower_http=trace,sqlx=trace,axum=trace
     volumes:
       - vauxl_data:/app/data
     depends_on:
@@ -19,17 +17,17 @@ services:
         condition: service_started
 
   db:
-    image: postgres:16
+    image: postgres:16-alpine
+    network_mode: "host"
     environment:
       POSTGRES_USER: vauxl
       POSTGRES_PASSWORD: vauxl
       POSTGRES_DB: vauxl
       POSTGRES_HOST_AUTH_METHOD: trust
-    #ports: ["127.0.0.1:${VAUXL_POSTGRES_PORT:-5432}:5432"]
-    network_mode: "host"
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes: 
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vauxl"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U vauxl"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -37,7 +35,6 @@ services:
   cache:
     image: redis:7-alpine
     network_mode: "host"
-    #ports: ["6379:6379"]
 
 volumes:
   pgdata: {}
