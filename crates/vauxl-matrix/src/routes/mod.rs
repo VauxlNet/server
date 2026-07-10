@@ -1,3 +1,4 @@
+pub mod client_info;
 pub mod keys;
 pub mod login;
 pub mod membership;

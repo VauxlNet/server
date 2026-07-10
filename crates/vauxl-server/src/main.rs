@@ -7,12 +7,19 @@ use axum::{
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use vauxl_matrix::{
     config::AppConfig,
     middleware::inject_db,
     routes::{
+        client_info::{
+            capabilities, delete_push_rule, get_account_data, get_profile, get_push_rule,
+            get_push_rules, get_room_account_data, logout, logout_all, public_rooms,
+            put_account_data, put_push_rule, put_room_account_data, set_avatar_url,
+            set_displayname, third_party_protocols, turn_server, create_filter, get_filter, whoami,
+            send_receipt, send_typing, room_keys_version,
+        },
         keys::{claim_keys, query_keys, upload_keys},
         login::{get_login_flows, login},
         membership::{
@@ -133,6 +140,13 @@ async fn main() -> Result<()> {
             "/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId",
             put(send_message_event),
         )
+        .route("/_matrix/client/v3/rooms/:roomId/receipt/:receiptType/:eventId",
+            post(send_receipt))
+        .route("/_matrix/client/v3/rooms/:roomId/typing/:userId",
+            put(send_typing))
+        // Room Keys
+        .route("/_matrix/client/v3/room_keys/version",
+            get(room_keys_version))
         // Membership
         .route(
             "/_matrix/client/v3/join/:roomIdOrAlias",
@@ -154,6 +168,52 @@ async fn main() -> Result<()> {
             "/_matrix/client/v3/sendToDevice/:eventType/:txnId",
             put(send_to_device),
         )
+        // Client info — required for Element stability
+        .route("/_matrix/client/v3/capabilities", get(capabilities))
+        .route("/_matrix/client/v3/pushrules/", get(get_push_rules))
+        .route(
+            "/_matrix/client/v3/pushrules/:scope/:kind/:ruleId",
+            get(get_push_rule)
+                .put(put_push_rule)
+                .delete(delete_push_rule),
+        )
+        .route("/_matrix/client/v3/publicRooms", get(public_rooms))
+        // Filters
+        .route("/_matrix/client/v3/user/:userId/filter",
+            post(create_filter).get(get_push_rules))
+        .route("/_matrix/client/v3/user/:userId/filter/:filterId",
+            get(get_filter))
+        // Account data
+        .route(
+            "/_matrix/client/v3/user/:userId/account_data/:eventType",
+            get(get_account_data).put(put_account_data),
+        )
+        .route(
+            "/_matrix/client/v3/user/:userId/rooms/:roomId/account_data/:eventType",
+            get(get_room_account_data).put(put_room_account_data),
+        )
+        // Profile
+        .route("/_matrix/client/v3/profile/:userId", get(get_profile))
+        .route(
+            "/_matrix/client/v3/profile/:userId/displayname",
+            put(set_displayname),
+        )
+        .route(
+            "/_matrix/client/v3/profile/:userId/avatar_url",
+            put(set_avatar_url),
+        )
+        // Logout
+        .route("/_matrix/client/v3/logout", post(logout))
+        .route("/_matrix/client/v3/logout/all", post(logout_all))
+        // Optional but reduces log noise
+        .route("/_matrix/client/v3/voip/turnServer", get(turn_server))
+        .route(
+            "/_matrix/client/v3/thirdparty/protocols",
+            get(third_party_protocols),
+        )
+        // Whoami
+        .route("/_matrix/client/v3/account/whoami",
+            get(whoami))
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)
