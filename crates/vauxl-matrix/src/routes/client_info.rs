@@ -197,9 +197,9 @@ pub async fn logout_all(
 
 /// POST /_matrix/client/v3/user/{userId}/filter
 pub async fn create_filter(
-    _auth:          AuthenticatedUser,
+    _auth: AuthenticatedUser,
     Path(_user_id): Path<String>,
-    body:           Option<Json<Value>>,  // Option so it doesn't fail if body is empty
+    body: Option<Json<Value>>, // Option so it doesn't fail if body is empty
 ) -> Json<Value> {
     let _ = body;
     Json(json!({ "filter_id": "1" }))
@@ -223,10 +223,7 @@ pub async fn get_filter(
 }
 
 /// GET /_matrix/client/v3/account/whoami
-pub async fn whoami(
-    State(state): State<SharedState>,
-    auth:         AuthenticatedUser,
-) -> Json<Value> {
+pub async fn whoami(State(state): State<SharedState>, auth: AuthenticatedUser) -> Json<Value> {
     Json(json!({
         "user_id":   auth.user_id,
         "device_id": auth.device_id,
@@ -254,7 +251,7 @@ pub async fn send_typing(
 
 /// GET /_matrix/client/v3/room_keys/version
 pub async fn room_keys_version(_auth: AuthenticatedUser) -> Result<Json<Value>, MatrixError> {
-    Err(MatrixError::NotFound)  // intentional — key backup not implemented yet
+    Err(MatrixError::NotFound) // intentional — key backup not implemented yet
 }
 
 /// GET /_matrix/client/v3/voip/turnServer — not implemented, return empty

@@ -14,11 +14,11 @@ use vauxl_matrix::{
     middleware::inject_db,
     routes::{
         client_info::{
-            capabilities, delete_push_rule, get_account_data, get_profile, get_push_rule,
-            get_push_rules, get_room_account_data, logout, logout_all, public_rooms,
-            put_account_data, put_push_rule, put_room_account_data, set_avatar_url,
-            set_displayname, third_party_protocols, turn_server, create_filter, get_filter, whoami,
-            send_receipt, send_typing, room_keys_version,
+            capabilities, create_filter, delete_push_rule, get_account_data, get_filter,
+            get_profile, get_push_rule, get_push_rules, get_room_account_data, logout, logout_all,
+            public_rooms, put_account_data, put_push_rule, put_room_account_data,
+            room_keys_version, send_receipt, send_typing, set_avatar_url, set_displayname,
+            third_party_protocols, turn_server, whoami,
         },
         keys::{claim_keys, query_keys, upload_keys},
         login::{get_login_flows, login},
@@ -140,13 +140,19 @@ async fn main() -> Result<()> {
             "/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId",
             put(send_message_event),
         )
-        .route("/_matrix/client/v3/rooms/:roomId/receipt/:receiptType/:eventId",
-            post(send_receipt))
-        .route("/_matrix/client/v3/rooms/:roomId/typing/:userId",
-            put(send_typing))
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/receipt/:receiptType/:eventId",
+            post(send_receipt),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/typing/:userId",
+            put(send_typing),
+        )
         // Room Keys
-        .route("/_matrix/client/v3/room_keys/version",
-            get(room_keys_version))
+        .route(
+            "/_matrix/client/v3/room_keys/version",
+            get(room_keys_version),
+        )
         // Membership
         .route(
             "/_matrix/client/v3/join/:roomIdOrAlias",
@@ -179,10 +185,14 @@ async fn main() -> Result<()> {
         )
         .route("/_matrix/client/v3/publicRooms", get(public_rooms))
         // Filters
-        .route("/_matrix/client/v3/user/:userId/filter",
-            post(create_filter).get(get_push_rules))
-        .route("/_matrix/client/v3/user/:userId/filter/:filterId",
-            get(get_filter))
+        .route(
+            "/_matrix/client/v3/user/:userId/filter",
+            post(create_filter).get(get_push_rules),
+        )
+        .route(
+            "/_matrix/client/v3/user/:userId/filter/:filterId",
+            get(get_filter),
+        )
         // Account data
         .route(
             "/_matrix/client/v3/user/:userId/account_data/:eventType",
@@ -212,8 +222,7 @@ async fn main() -> Result<()> {
             get(third_party_protocols),
         )
         // Whoami
-        .route("/_matrix/client/v3/account/whoami",
-            get(whoami))
+        .route("/_matrix/client/v3/account/whoami", get(whoami))
         // Health
         .route("/_vauxl/health", get(health))
         .with_state(state)
