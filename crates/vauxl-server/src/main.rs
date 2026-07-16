@@ -16,16 +16,21 @@ use vauxl_matrix::{
         client_info::{
             capabilities, create_filter, delete_push_rule, get_account_data, get_filter,
             get_profile, get_push_rule, get_push_rules, get_room_account_data, logout, logout_all,
-            public_rooms, put_account_data, put_push_rule, put_room_account_data,
-            room_keys_version, send_receipt, send_typing, set_avatar_url, set_displayname,
-            third_party_protocols, turn_server, whoami,
+            put_account_data, put_push_rule, put_room_account_data, room_keys_version,
+            set_avatar_url, set_displayname, third_party_protocols, turn_server, whoami,
         },
+        directory::{
+            delete_room_alias, get_room_alias, public_rooms_full, public_rooms_post, put_room_alias,
+        },
+        ephemeral::{send_receipt, send_typing},
         keys::{claim_keys, query_keys, upload_keys},
         login::{get_login_flows, login},
+        media::{download_media, download_media_with_name, thumbnail_media, upload_media},
         membership::{
             ban_from_room, invite_to_room, join_room, join_room_by_id_or_alias, kick_from_room,
             leave_room,
         },
+        presence::{get_presence, set_presence},
         register::register,
         rooms::{
             create_room, get_room_members, get_room_messages_handler, get_room_state,
@@ -140,18 +145,63 @@ async fn main() -> Result<()> {
             "/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId",
             put(send_message_event),
         )
-        .route(
-            "/_matrix/client/v3/rooms/:roomId/receipt/:receiptType/:eventId",
-            post(send_receipt),
-        )
-        .route(
-            "/_matrix/client/v3/rooms/:roomId/typing/:userId",
-            put(send_typing),
-        )
         // Room Keys
         .route(
             "/_matrix/client/v3/room_keys/version",
             get(room_keys_version),
+        )
+        // Ephemeral (real implementations)
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/typing/:userId",
+            put(send_typing),
+        )
+        .route(
+            "/_matrix/client/v3/rooms/:roomId/receipt/:receiptType/:eventId",
+            post(send_receipt),
+        )
+        // Presence
+        .route(
+            "/_matrix/client/v3/presence/:userId/status",
+            get(get_presence).put(set_presence),
+        )
+        // Media (v3 paths)
+        .route("/_matrix/media/v3/upload", post(upload_media))
+        .route(
+            "/_matrix/media/v3/download/:serverName/:mediaId",
+            get(download_media),
+        )
+        .route(
+            "/_matrix/media/v3/download/:serverName/:mediaId/:fileName",
+            get(download_media_with_name),
+        )
+        .route(
+            "/_matrix/media/v3/thumbnail/:serverName/:mediaId",
+            get(thumbnail_media),
+        )
+        // Legacy r0 media paths (Element still uses these)
+        .route("/_matrix/media/r0/upload", post(upload_media))
+        .route(
+            "/_matrix/media/r0/download/:serverName/:mediaId",
+            get(download_media),
+        )
+        .route(
+            "/_matrix/media/r0/download/:serverName/:mediaId/:fileName",
+            get(download_media_with_name),
+        )
+        .route(
+            "/_matrix/media/r0/thumbnail/:serverName/:mediaId",
+            get(thumbnail_media),
+        )
+        // Room directory
+        .route(
+            "/_matrix/client/v3/publicRooms",
+            get(public_rooms_full).post(public_rooms_post),
+        )
+        .route(
+            "/_matrix/client/v3/directory/room/:roomAlias",
+            get(get_room_alias)
+                .put(put_room_alias)
+                .delete(delete_room_alias),
         )
         // Membership
         .route(
@@ -183,7 +233,6 @@ async fn main() -> Result<()> {
                 .put(put_push_rule)
                 .delete(delete_push_rule),
         )
-        .route("/_matrix/client/v3/publicRooms", get(public_rooms))
         // Filters
         .route(
             "/_matrix/client/v3/user/:userId/filter",

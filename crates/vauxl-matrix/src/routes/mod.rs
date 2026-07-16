@@ -1,7 +1,11 @@
 pub mod client_info;
+pub mod directory;
+pub mod ephemeral;
 pub mod keys;
 pub mod login;
+pub mod media;
 pub mod membership;
+pub mod presence;
 pub mod register;
 pub mod rooms;
 pub mod sync;

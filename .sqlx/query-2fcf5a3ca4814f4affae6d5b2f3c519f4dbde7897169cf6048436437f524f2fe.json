@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO read_receipts (room_id, user_id, event_id, receipt_type, ts)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (room_id, user_id, receipt_type)\n        DO UPDATE SET event_id = EXCLUDED.event_id, ts = EXCLUDED.ts\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2fcf5a3ca4814f4affae6d5b2f3c519f4dbde7897169cf6048436437f524f2fe"
+}

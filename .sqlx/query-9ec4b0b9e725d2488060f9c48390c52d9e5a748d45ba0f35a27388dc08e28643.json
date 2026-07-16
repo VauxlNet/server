@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT r.room_id,\n            (SELECT e.content->>'name' FROM room_state rs JOIN events e ON e.event_id = rs.event_id\n             WHERE rs.room_id = r.room_id AND rs.event_type = 'm.room.name' LIMIT 1) AS name,\n            (SELECT COUNT(*) FROM room_members WHERE room_id = r.room_id AND membership = 'join')\n             AS member_count\n        FROM rooms r\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "member_count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "9ec4b0b9e725d2488060f9c48390c52d9e5a748d45ba0f35a27388dc08e28643"
+}
