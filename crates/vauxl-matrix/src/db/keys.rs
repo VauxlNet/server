@@ -66,9 +66,6 @@ pub async fn store_one_time_keys(
         stored += result.rows_affected() as u32;
     }
 
-    // Update the OTK count
-    update_otk_count(pool, user_id, device_id).await?;
-
     Ok(stored)
 }
 
@@ -102,35 +99,6 @@ pub async fn get_otk_counts(
         }
     }
     Ok(Value::Object(map))
-}
-
-async fn update_otk_count(
-    pool: &PgPool,
-    user_id: &str,
-    device_id: &str,
-) -> Result<(), MatrixError> {
-    // Recount and upsert into device_otk_counts
-    sqlx::query!(
-        r#"
-        INSERT INTO device_otk_counts (user_id, device_id, algorithm, count)
-        SELECT
-            $1, $2,
-            split_part(key_id, ':', 1),
-            COUNT(*)::int
-        FROM one_time_keys
-        WHERE user_id   = $1
-        AND   device_id = $2
-        AND   claimed   = FALSE
-        GROUP BY split_part(key_id, ':', 1)
-        ON CONFLICT (user_id, device_id, algorithm)
-        DO UPDATE SET count = EXCLUDED.count
-        "#,
-        user_id,
-        device_id,
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 // ── Query ─────────────────────────────────────────────────────────────────
@@ -190,9 +158,6 @@ pub async fn claim_one_time_key(
     )
     .fetch_optional(pool)
     .await?;
-
-    // Update count after claiming
-    update_otk_count(pool, user_id, device_id).await?;
 
     Ok(row.map(|r| (r.key_id, r.key_json)))
 }

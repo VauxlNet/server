@@ -12,8 +12,8 @@ use tokio::time::{sleep, Duration};
 use crate::{
     auth::AuthenticatedUser,
     db::{
-        pop_to_device_messages,
-        sync::{get_room_state, get_room_timeline, get_user_rooms},
+        get_full_room_state, pop_to_device_messages,
+        sync::{get_room_timeline, get_user_rooms},
     },
     error::MatrixError,
     routes::{
@@ -116,7 +116,7 @@ async fn build_joined_room(
     _user_id: &str,
     since: u64,
 ) -> Result<Value, MatrixError> {
-    let state_events = get_room_state(&state.db, room_id).await?;
+    let state_events = get_full_room_state(&state.db, room_id).await?;
     let timeline_events = get_room_timeline(&state.db, room_id, since).await?;
     let limited = false;
 

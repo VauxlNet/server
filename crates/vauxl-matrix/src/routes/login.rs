@@ -2,7 +2,7 @@
 //! GET  /_matrix/client/v3/login  (returns supported flows)
 
 use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
@@ -32,14 +32,6 @@ pub struct UserIdentifier {
     #[serde(rename = "type")]
     pub id_type: String,
     pub user: Option<String>, // local part or full MXID
-}
-
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub user_id: String,
-    pub access_token: String,
-    pub device_id: String,
-    pub home_server: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────

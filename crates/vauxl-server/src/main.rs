@@ -41,7 +41,7 @@ use vauxl_matrix::{
         versions::client_versions,
     },
     signing_key::HomeserverSigningKey,
-    state::{AppState, WakeEvent},
+    state::AppState,
     well_known::{federation_version, key_v2_server, well_known_client, well_known_server},
 };
 
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let signing_key = HomeserverSigningKey::load_or_generate(&cfg.signing_key.path)?;
 
     // ── Shared state ──────────────────────────────────────────────────────
-    let (wake_tx, _) = tokio::sync::broadcast::channel::<WakeEvent>(1024);
+    let (wake_tx, _) = tokio::sync::broadcast::channel::<()>(1024);
 
     let state = Arc::new(AppState {
         config: cfg.clone(),

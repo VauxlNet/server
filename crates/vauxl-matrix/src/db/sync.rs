@@ -5,14 +5,6 @@ use sqlx::PgPool;
 
 use crate::error::MatrixError;
 
-/// A room the user is a member of, with recent events.
-pub struct SyncRoom {
-    pub room_id: String,
-    pub membership: String,
-    pub state_events: Vec<Value>,
-    pub timeline: Vec<Value>,
-}
-
 /// Returns all rooms a user is currently joined or invited to.
 pub async fn get_user_rooms(
     pool: &PgPool,
@@ -34,26 +26,6 @@ pub async fn get_user_rooms(
     Ok(rows
         .into_iter()
         .map(|r| (r.room_id, r.membership))
-        .collect())
-}
-
-/// Returns current state events for a room (m.room.create, m.room.name, etc.)
-pub async fn get_room_state(pool: &PgPool, room_id: &str) -> Result<Vec<Value>, MatrixError> {
-    let rows = sqlx::query!(
-        r#"
-        SELECT e.raw_event
-        FROM   room_state rs
-        JOIN   events e ON e.event_id = rs.event_id
-        WHERE  rs.room_id = $1
-        "#,
-        room_id,
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .into_iter()
-        .filter_map(|r| serde_json::from_value(r.raw_event).ok())
         .collect())
 }
 

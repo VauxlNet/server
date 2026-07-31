@@ -65,16 +65,6 @@ pub async fn get_push_rule(
     Err(MatrixError::NotFound)
 }
 
-/// GET /_matrix/client/v3/publicRooms
-pub async fn public_rooms() -> Json<Value> {
-    Json(json!({
-        "chunk":             [],
-        "total_room_count_estimate": 0,
-        "next_batch":        null,
-        "prev_batch":        null
-    }))
-}
-
 /// GET /_matrix/client/v3/user/{userId}/account_data/{type}
 pub async fn get_account_data(
     _auth: AuthenticatedUser,
@@ -162,14 +152,6 @@ pub async fn logout(
     State(state): State<SharedState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<Value>, MatrixError> {
-    use sha2::{Digest, Sha256};
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(
-            // We don't have the raw token here, but we can delete by user+device
-            auth.device_id.as_bytes()
-        )
-    );
     // Delete all tokens for this device
     sqlx::query!(
         "DELETE FROM access_tokens WHERE user_id = $1 AND device_id = $2",
@@ -179,7 +161,6 @@ pub async fn logout(
     .execute(&state.db)
     .await
     .map_err(MatrixError::from)?;
-    let _ = hash; // suppress warning
     Ok(Json(json!({})))
 }
 
@@ -230,23 +211,6 @@ pub async fn whoami(State(state): State<SharedState>, auth: AuthenticatedUser) -
         "is_guest":  false,
         "home_server": state.config.server.server_name
     }))
-}
-
-/// POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
-pub async fn send_receipt(
-    _auth: AuthenticatedUser,
-    Path((_room_id, _receipt_type, _event_id)): Path<(String, String, String)>,
-) -> Json<Value> {
-    Json(json!({}))
-}
-
-/// PUT /_matrix/client/v3/rooms/{roomId}/typing/{userId}
-pub async fn send_typing(
-    _auth: AuthenticatedUser,
-    Path((_room_id, _user_id)): Path<(String, String)>,
-    Json(_body): Json<Value>,
-) -> Json<Value> {
-    Json(json!({}))
 }
 
 /// GET /_matrix/client/v3/room_keys/version

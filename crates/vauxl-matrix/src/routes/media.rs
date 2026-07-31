@@ -108,14 +108,14 @@ pub async fn download_media(
     State(state): State<SharedState>,
     Path((server_name, media_id)): Path<(String, String)>,
 ) -> Result<Response, MatrixError> {
-    serve_media(&state, &server_name, &media_id, false).await
+    serve_media(&state, &server_name, &media_id).await
 }
 
 pub async fn download_media_with_name(
     State(state): State<SharedState>,
     Path((server_name, media_id, _filename)): Path<(String, String, String)>,
 ) -> Result<Response, MatrixError> {
-    serve_media(&state, &server_name, &media_id, false).await
+    serve_media(&state, &server_name, &media_id).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,14 +133,13 @@ pub async fn thumbnail_media(
 ) -> Result<Response, MatrixError> {
     // For MVP: serve the original file as the thumbnail
     // Real thumbnail generation with the `image` crate can be added later
-    serve_media(&state, &server_name, &media_id, true).await
+    serve_media(&state, &server_name, &media_id).await
 }
 
 async fn serve_media(
     state: &SharedState,
     server_name: &str,
     media_id: &str,
-    _thumbnail: bool,
 ) -> Result<Response, MatrixError> {
     // Only serve media from our own server in MVP
     if server_name != state.config.server.server_name {

@@ -15,7 +15,7 @@ use crate::{
         get_room_messages, put_room_event, put_room_state_event,
     },
     error::MatrixError,
-    state::{SharedState, WakeEvent},
+    state::SharedState,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -142,9 +142,7 @@ pub async fn send_state_event(
     )
     .await?;
 
-    let _ = state.wake_tx.send(WakeEvent {
-        room_id: room_id.clone(),
-    });
+    let _ = state.wake_tx.send(());
     Ok(Json(json!({ "event_id": event_id })))
 }
 
@@ -168,9 +166,7 @@ pub async fn send_state_event_no_key(
     )
     .await?;
 
-    let _ = state.wake_tx.send(WakeEvent {
-        room_id: room_id.clone(),
-    });
+    let _ = state.wake_tx.send(());
     Ok(Json(json!({ "event_id": event_id })))
 }
 
@@ -201,9 +197,7 @@ pub async fn send_message_event(
     .await?;
 
     // Wake any long-polling /sync handlers for this room
-    let _ = state.wake_tx.send(WakeEvent {
-        room_id: room_id.clone(),
-    });
+    let _ = state.wake_tx.send(());
 
     tracing::debug!(room_id = %room_id, event_id = %event_id, "Message sent");
     Ok(Json(json!({ "event_id": event_id })))
