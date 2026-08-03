@@ -31,11 +31,6 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build server
-        env:
-          SQLX_OFFLINE: true
-        run: cargo build --release -p vauxl-server
       - name: Build Complement image
         run: docker build -f docker/Dockerfile.complement -t vauxl-complement .
       - uses: actions/checkout@v4

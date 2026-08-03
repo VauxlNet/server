@@ -196,7 +196,7 @@ pub async fn send_message_event(
     )
     .await?;
 
-    // Wake any long-polling /sync handlers for this room
+    // Wake any long-polling /sync handlers.
     let _ = state.wake_tx.send(());
 
     tracing::debug!(room_id = %room_id, event_id = %event_id, "Message sent");
