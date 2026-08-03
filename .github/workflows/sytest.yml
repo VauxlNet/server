@@ -1,20 +1,57 @@
-name: Matrix Spec Compliance
+name: Matrix API Smoke
+
 on: [pull_request]
 
 jobs:
-  sytest:
+  complement:
     runs-on: ubuntu-latest
-    continue-on-error: true  # don't block PRs until baseline established
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vauxl
+          POSTGRES_PASSWORD: vauxl
+          POSTGRES_DB: vauxl
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vauxl -d vauxl"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Build server
+        env:
+          SQLX_OFFLINE: true
         run: cargo build --release -p vauxl-server
-      - name: Run Sytest
-        uses: matrix-org/sytest-action@v0
+      - name: Build Complement image
+        run: docker build -f docker/Dockerfile.complement -t vauxl-complement .
+      - uses: actions/checkout@v4
         with:
-          server-binary: target/release/vauxl-server
-      - name: Upload results
-        uses: actions/upload-artifact@v4
+          repository: matrix-org/complement
+          ref: c466460957697faa4ec36ce1b37921cef238fb91
+          path: complement
+      - uses: actions/setup-go@v5
         with:
-          name: sytest-results
-          path: sytest-results.xml
+          go-version-file: complement/go.mod
+      - name: Run Complement smoke test
+        working-directory: complement
+        env:
+          COMPLEMENT_BASE_IMAGE: vauxl-complement
+          COMPLEMENT_SHARE_ENV_PREFIX: PASS_
+          COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS: "1"
+          PASS_VAUXL_DATABASE__URL: postgres://vauxl:vauxl@host.docker.internal:5432/vauxl?sslmode=disable
+          PASS_VAUXL_REDIS__URL: redis://host.docker.internal:6379
+        run: go test -v -run '^TestVersionStructure$' ./tests/csapi

@@ -58,7 +58,11 @@ async fn main() -> Result<()> {
     let cfg: AppConfig = config::Config::builder()
         .add_source(config::File::with_name("config/default"))
         .add_source(config::File::with_name("config/dev").required(false))
-        .add_source(config::Environment::with_prefix("VAUXL").separator("__"))
+        .add_source(
+            config::Environment::with_prefix("VAUXL")
+                .prefix_separator("_")
+                .separator("__"),
+        )
         .build()?
         .try_deserialize()?;
 
