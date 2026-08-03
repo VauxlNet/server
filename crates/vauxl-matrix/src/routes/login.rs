@@ -129,11 +129,20 @@ fn resolve_user_id(identifier: &UserIdentifier, server_name: &str) -> Result<Str
                 .as_deref()
                 .ok_or_else(|| MatrixError::BadJson("Missing 'user' in identifier".into()))?;
 
-            if user.starts_with('@') {
-                // Already a full MXID — use as-is
-                Ok(user.to_owned())
+            if let Some(full_id) = user.strip_prefix('@') {
+                let (localpart, homeserver) = full_id
+                    .split_once(':')
+                    .filter(|(localpart, homeserver)| {
+                        !localpart.is_empty() && !homeserver.is_empty()
+                    })
+                    .ok_or_else(|| MatrixError::BadJson("Invalid Matrix user ID".into()))?;
+
+                if !homeserver.eq_ignore_ascii_case(server_name) {
+                    return Err(MatrixError::Forbidden);
+                }
+
+                Ok(format!("@{}:{}", localpart.to_lowercase(), server_name))
             } else {
-                // Local part only — prepend @ and server name
                 Ok(format!("@{}:{}", user.to_lowercase(), server_name))
             }
         }
@@ -153,4 +162,41 @@ fn verify_password(password: &str, hash: &str) -> Result<(), MatrixError> {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .map_err(|_| MatrixError::Forbidden)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_identifier(user: &str) -> UserIdentifier {
+        UserIdentifier {
+            id_type: "m.id.user".into(),
+            user: Some(user.into()),
+        }
+    }
+
+    #[test]
+    fn resolves_localpart_to_canonical_user_id() {
+        let user_id = resolve_user_id(&user_identifier("Alice"), "matrix.test").unwrap();
+        assert_eq!(user_id, "@alice:matrix.test");
+    }
+
+    #[test]
+    fn resolves_local_full_mxid_case_insensitively() {
+        let user_id =
+            resolve_user_id(&user_identifier("@Alice:MATRIX.TEST"), "matrix.test").unwrap();
+        assert_eq!(user_id, "@alice:matrix.test");
+    }
+
+    #[test]
+    fn rejects_foreign_full_mxid() {
+        let result = resolve_user_id(&user_identifier("@alice:elsewhere.test"), "matrix.test");
+        assert!(matches!(result, Err(MatrixError::Forbidden)));
+    }
+
+    #[test]
+    fn rejects_malformed_full_mxid() {
+        let result = resolve_user_id(&user_identifier("@alice"), "matrix.test");
+        assert!(matches!(result, Err(MatrixError::BadJson(_))));
+    }
 }

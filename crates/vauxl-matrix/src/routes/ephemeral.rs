@@ -11,7 +11,7 @@ use redis::AsyncCommands;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{auth::AuthenticatedUser, error::MatrixError, state::SharedState};
+use crate::{auth::AuthenticatedUser, db::assert_joined, error::MatrixError, state::SharedState};
 
 // ── Typing ────────────────────────────────────────────────────────────────
 
@@ -25,9 +25,14 @@ pub struct TypingRequest {
 pub async fn send_typing(
     State(state): State<SharedState>,
     auth: AuthenticatedUser,
-    Path((room_id, _user_id)): Path<(String, String)>,
+    Path((room_id, user_id)): Path<(String, String)>,
     Json(body): Json<TypingRequest>,
 ) -> Result<Json<Value>, MatrixError> {
+    if user_id != auth.user_id {
+        return Err(MatrixError::Forbidden);
+    }
+    assert_joined(&state.db, &room_id, &auth.user_id).await?;
+
     let mut conn = state
         .redis
         .get_multiplexed_async_connection()
@@ -35,11 +40,17 @@ pub async fn send_typing(
         .map_err(|e| MatrixError::Internal(e.to_string()))?;
 
     let key = format!("typing:{}:{}", room_id, auth.user_id);
+    let dirty_key = format!("typing-dirty:{room_id}");
 
     if body.typing {
-        let ttl_secs = (body.timeout.unwrap_or(30_000) / 1000).clamp(1, 60) as i64;
+        let timeout_ms = body.timeout.unwrap_or(30_000).clamp(1, 60_000);
+        let dirty_ttl_ms = timeout_ms.saturating_add(35_000);
         let _: () = conn
-            .set_ex(&key, "1", ttl_secs as u64)
+            .pset_ex(&key, "1", timeout_ms)
+            .await
+            .map_err(|e| MatrixError::Internal(e.to_string()))?;
+        let _: () = conn
+            .pset_ex(&dirty_key, "1", dirty_ttl_ms)
             .await
             .map_err(|e| MatrixError::Internal(e.to_string()))?;
     } else {
@@ -47,24 +58,38 @@ pub async fn send_typing(
             .del(&key)
             .await
             .map_err(|e| MatrixError::Internal(e.to_string()))?;
+        let _: () = conn
+            .pset_ex(&dirty_key, "1", 35_000)
+            .await
+            .map_err(|e| MatrixError::Internal(e.to_string()))?;
     }
 
+    let _ = state.wake_tx.send(());
     Ok(Json(json!({})))
 }
 
-/// Returns current typers for a room — used by /sync ephemeral.
-pub async fn get_typing_users(redis: &redis::Client, room_id: &str) -> Vec<String> {
+/// Returns the current typing state when a typing update is pending.
+pub async fn get_typing_users(redis: &redis::Client, room_id: &str) -> Option<Vec<String>> {
     let Ok(mut conn) = redis.get_multiplexed_async_connection().await else {
-        return vec![];
+        return None;
     };
 
     let pattern = format!("typing:{}:*", room_id);
     let keys: Vec<String> = conn.keys(&pattern).await.unwrap_or_default();
 
-    keys.iter()
+    let mut users: Vec<String> = keys
+        .iter()
         .filter_map(|k| k.strip_prefix(&format!("typing:{}:", room_id)))
         .map(|u| u.to_owned())
-        .collect()
+        .collect();
+    users.sort();
+
+    let dirty: bool = conn
+        .exists(format!("typing-dirty:{room_id}"))
+        .await
+        .unwrap_or(false);
+
+    (!users.is_empty() || dirty).then_some(users)
 }
 
 // ── Read receipts ─────────────────────────────────────────────────────────
@@ -75,10 +100,28 @@ pub async fn send_receipt(
     auth: AuthenticatedUser,
     Path((room_id, receipt_type, event_id)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, MatrixError> {
-    // Only store m.read and m.read.private
+    assert_joined(&state.db, &room_id, &auth.user_id).await?;
+
     match receipt_type.as_str() {
-        "m.read" | "m.read.private" | "m.fully_read" => {}
-        _ => return Ok(Json(json!({}))),
+        "m.read" | "m.read.private" => {}
+        _ => return Err(MatrixError::BadJson("Unsupported receipt type".into())),
+    }
+
+    let event_exists = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM events WHERE room_id = $1 AND event_id = $2
+        ) AS "exists!"
+        "#,
+        room_id,
+        event_id,
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(MatrixError::from)?;
+
+    if !event_exists {
+        return Err(MatrixError::NotFound);
     }
 
     let now_ms = std::time::SystemTime::now()
@@ -103,20 +146,22 @@ pub async fn send_receipt(
     .await
     .map_err(MatrixError::from)?;
 
+    let _ = state.wake_tx.send(());
     Ok(Json(json!({})))
 }
 
-/// Returns receipt events for a room — used by /sync ephemeral.
-/// Only returns public m.read receipts (m.read.private is not shared).
-pub async fn get_room_receipts(pool: &sqlx::PgPool, room_id: &str) -> Vec<Value> {
+/// Returns public receipts plus the syncing user's private receipts.
+pub async fn get_room_receipts(pool: &sqlx::PgPool, room_id: &str, user_id: &str) -> Vec<Value> {
     let rows = sqlx::query!(
         r#"
-        SELECT user_id, event_id, ts
+        SELECT user_id, event_id, receipt_type, ts
         FROM   read_receipts
         WHERE  room_id      = $1
-        AND    receipt_type = 'm.read'
+        AND   (receipt_type = 'm.read'
+               OR (receipt_type = 'm.read.private' AND user_id = $2))
         "#,
         room_id,
+        user_id,
     )
     .fetch_all(pool)
     .await
@@ -126,18 +171,17 @@ pub async fn get_room_receipts(pool: &sqlx::PgPool, room_id: &str) -> Vec<Value>
         return vec![];
     }
 
-    // Matrix receipt format:
-    // {"type": "m.receipt", "content": {event_id: {"m.read": {user_id: {ts}}}}}
     let mut content = serde_json::Map::new();
     for row in rows {
-        content.insert(
-            row.event_id,
-            json!({
-                "m.read": {
-                    row.user_id: { "ts": row.ts }
-                }
-            }),
-        );
+        let event = content.entry(row.event_id).or_insert_with(|| json!({}));
+        let receipt_types = event.as_object_mut().expect("receipt event is an object");
+        let receipt = receipt_types
+            .entry(row.receipt_type)
+            .or_insert_with(|| json!({}));
+        receipt
+            .as_object_mut()
+            .expect("receipt users are an object")
+            .insert(row.user_id, json!({ "ts": row.ts }));
     }
 
     vec![json!({

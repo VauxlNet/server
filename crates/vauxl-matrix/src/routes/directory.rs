@@ -110,6 +110,13 @@ pub async fn public_rooms_post(
             (SELECT COUNT(*) FROM room_members WHERE room_id = r.room_id AND membership = 'join')
              AS member_count
         FROM rooms r
+        WHERE (
+            SELECT e.content->>'join_rule'
+            FROM room_state rs
+            JOIN events e ON e.event_id = rs.event_id
+            WHERE rs.room_id = r.room_id AND rs.event_type = 'm.room.join_rules'
+            LIMIT 1
+        ) = 'public'
         LIMIT $1
         "#,
         limit,

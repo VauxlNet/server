@@ -1,0 +1,23 @@
+[package]
+name = "vauxl-crypto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vauxl-crypto = { path = ".." }
+
+[[bin]]
+name = "kem_decapsulate"
+path = "fuzz_targets/kem_decapsulate.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

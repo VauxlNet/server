@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT event_id\n            FROM transaction_ids\n            WHERE user_id = $1 AND device_id = $2 AND txn_id = $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "cea8c872379e07e9b633c2197b74ef393d1bbfc840cb0df558c77927eccd1ea9"
+}

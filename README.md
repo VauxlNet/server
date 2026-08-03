@@ -12,11 +12,11 @@ This repository hosts the Matrix-first server strategy for Vauxl.
 - Undocumented proprietary event formats.
 
 ## Structure
-- `crates/` Cargo workspace: `vauxl-server` (binary), `vauxl-matrix` (client-server API), `vauxl-crypto`, plus stubs for federation, identity, media, admin, push
-- `migrations/` PostgreSQL schema (regenerate `.sqlx/` with `cargo sqlx prepare --workspace` after changing queries)
+- `crates/` Cargo workspace with the server binary, Matrix client API, and cryptographic primitives
+- `migrations/` PostgreSQL schema and committed SQLx metadata for offline builds
 - `config/` runtime configuration defaults
 - `docker/` dev compose stack and Dockerfiles
-- `scripts/` local dev helpers
+- `scripts/` local development and quality checks
 - `docs/` extension and operations docs
 
 ## Extension Policy

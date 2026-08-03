@@ -2,65 +2,37 @@ name: Nightly Security Checks
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # 02:00 UTC täglich
-  workflow_dispatch:      # Manuell auslösbar
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-
   audit:
-    name: Daily CVE Audit
+    name: Daily dependency audit
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
     steps:
       - uses: actions/checkout@v4
-      - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses
-
-
-#  deny:
-#    name: Security & Licenses (cargo-deny)
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v4
-#      - uses: EmbarkStudios/cargo-deny-action@v2
-#      with:
-#       command: check advisories licenses bans sources
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny --locked --all-features check advisories licenses bans sources
+      - run: cargo deny --manifest-path crates/vauxl-crypto/fuzz/Cargo.toml --locked --all-features check advisories licenses bans sources
 
   fuzz-kem:
-    name: Fuzz vauxl-crypto KEM
+    name: Fuzz KEM decapsulation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
-      - name: Create fuzz target if missing
-        run: |
-          if [ ! -d "crates/vauxl-crypto/fuzz" ]; then
-            cd crates/vauxl-crypto
-            cargo fuzz init
-            cat > fuzz/fuzz_targets/fuzz_kem.rs << 'FUZZ'
-          #![no_main]
-          use libfuzzer_sys::fuzz_target;
-
-          fuzz_target!(|data: &[u8]| {
-              // Placeholder: sobald decapsulate() implementiert ist,
-              // wird das mit echten Inputs gefüttert
-              let _ = data;
-          });
-          FUZZ
-          fi
-      - name: Run fuzzer (60 seconds)
-        run: |
-          cd crates/vauxl-crypto
-          cargo +nightly fuzz run fuzz_kem -- -max_total_time=60 2>&1 || true
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Run KEM fuzzer
+        working-directory: crates/vauxl-crypto
+        run: cargo +nightly fuzz run kem_decapsulate -- -max_total_time=60
       - name: Upload corpus
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: fuzz-corpus
           path: crates/vauxl-crypto/fuzz/corpus/
+          if-no-files-found: ignore

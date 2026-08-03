@@ -185,16 +185,19 @@ pub async fn put_room_state_event(
     Ok(event_id)
 }
 
-/// Sends a message event (non-state), signed.
-pub async fn put_room_event(
+/// Sends a message event once for an endpoint-scoped client transaction ID.
+#[allow(clippy::too_many_arguments)]
+pub async fn put_room_event_idempotent(
     pool: &PgPool,
     room_id: &str,
     event_type: &str,
     sender: &str,
+    device_id: &str,
+    txn_id: &str,
     content: Value,
     server_name: &str,
     signing_key: &HomeserverSigningKey,
-) -> Result<String, MatrixError> {
+) -> Result<(String, bool), MatrixError> {
     let now_ms = now_millis();
     let event_id = generate_event_id(server_name);
 
@@ -213,6 +216,43 @@ pub async fn put_room_event(
     let event_id = raw_event["event_id"].as_str().unwrap().to_owned();
     let ev_content = raw_event["content"].clone();
 
+    let scoped_txn_id = serde_json::to_string(&("room.send", room_id, event_type, txn_id))
+        .expect("string tuple is serializable");
+    let mut tx = pool.begin().await?;
+
+    let claimed_event_id = sqlx::query_scalar!(
+        r#"
+        INSERT INTO transaction_ids (user_id, device_id, txn_id, event_id, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (user_id, device_id, txn_id) DO NOTHING
+        RETURNING event_id AS "event_id!"
+        "#,
+        sender,
+        device_id,
+        scoped_txn_id,
+        event_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if claimed_event_id.is_none() {
+        let existing_event_id = sqlx::query_scalar!(
+            r#"
+            SELECT event_id
+            FROM transaction_ids
+            WHERE user_id = $1 AND device_id = $2 AND txn_id = $3
+            "#,
+            sender,
+            device_id,
+            scoped_txn_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?
+        .ok_or_else(|| MatrixError::Internal("Transaction has no event ID".into()))?;
+        tx.commit().await?;
+        return Ok((existing_event_id, false));
+    }
+
     sqlx::query!(
         r#"
         INSERT INTO events
@@ -227,10 +267,11 @@ pub async fn put_room_event(
         ev_content,
         raw_event,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    Ok(event_id)
+    tx.commit().await?;
+    Ok((event_id, true))
 }
 
 /// Checks that a user is a joined member of a room.
@@ -363,4 +404,94 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::SigningKey;
+    use rand::{rngs::OsRng, RngCore as _};
+    use sqlx::PgPool;
+
+    use super::{put_room_event_idempotent, HomeserverSigningKey};
+
+    #[test]
+    fn message_transaction_scope_includes_room_and_event_type() {
+        let txn = "same";
+        let first =
+            serde_json::to_string(&("room.send", "!a:test", "m.room.message", txn)).unwrap();
+        let other_room =
+            serde_json::to_string(&("room.send", "!b:test", "m.room.message", txn)).unwrap();
+        let other_type =
+            serde_json::to_string(&("room.send", "!a:test", "m.reaction", txn)).unwrap();
+
+        assert_ne!(first, other_room);
+        assert_ne!(first, other_type);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    #[ignore = "requires PostgreSQL"]
+    async fn concurrent_message_transaction_creates_one_event(pool: PgPool) {
+        let mut random = [0_u8; 8];
+        OsRng.fill_bytes(&mut random);
+        let room_id = format!("!{}:test", hex::encode(random));
+        sqlx::query("INSERT INTO rooms (room_id) VALUES ($1)")
+            .bind(&room_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let signing_key = HomeserverSigningKey {
+            verifying_key: signing_key.verifying_key(),
+            signing_key,
+            key_id: "ed25519:test".into(),
+        };
+        let content = serde_json::json!({"msgtype": "m.text", "body": "one event"});
+
+        let first = put_room_event_idempotent(
+            &pool,
+            &room_id,
+            "m.room.message",
+            "@alice:test",
+            "DEVICE",
+            "same-transaction",
+            content.clone(),
+            "test",
+            &signing_key,
+        );
+        let second = put_room_event_idempotent(
+            &pool,
+            &room_id,
+            "m.room.message",
+            "@alice:test",
+            "DEVICE",
+            "same-transaction",
+            content,
+            "test",
+            &signing_key,
+        );
+        let (first, second) = tokio::join!(first, second);
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_eq!(first.0, second.0);
+        assert_ne!(first.1, second.1);
+
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE room_id = $1")
+            .bind(&room_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let transaction_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transaction_ids WHERE user_id = $1 AND device_id = $2",
+        )
+        .bind("@alice:test")
+        .bind("DEVICE")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(event_count, 1);
+        assert_eq!(transaction_count, 1);
+    }
 }

@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::{
     auth::AuthenticatedUser,
     db::{
-        assert_joined, check_and_store_txn, create_room_with_state, get_full_room_state,
-        get_room_messages, put_room_event, put_room_state_event,
+        assert_joined, create_room_with_state, get_full_room_state, get_room_messages,
+        put_room_event_idempotent, put_room_state_event,
     },
     error::MatrixError,
     state::SharedState,
@@ -178,28 +178,24 @@ pub async fn send_message_event(
 ) -> Result<Json<Value>, MatrixError> {
     assert_joined(&state.db, &room_id, &auth.user_id).await?;
 
-    let is_new = check_and_store_txn(&state.db, &auth.user_id, &auth.device_id, &txn_id).await?;
-
-    if !is_new {
-        tracing::debug!(txn_id = %txn_id, "Duplicate txn — skipping");
-        return Ok(Json(json!({ "event_id": format!("$dup:{}", txn_id) })));
-    }
-
-    let event_id = put_room_event(
+    let (event_id, inserted) = put_room_event_idempotent(
         &state.db,
         &room_id,
         &event_type,
         &auth.user_id,
+        &auth.device_id,
+        &txn_id,
         content,
         &state.config.server.server_name,
         &state.signing_key,
     )
     .await?;
 
-    // Wake any long-polling /sync handlers.
-    let _ = state.wake_tx.send(());
+    if inserted {
+        let _ = state.wake_tx.send(());
+    }
 
-    tracing::debug!(room_id = %room_id, event_id = %event_id, "Message sent");
+    tracing::debug!(room_id = %room_id, event_id = %event_id, inserted, "Message sent");
     Ok(Json(json!({ "event_id": event_id })))
 }
 

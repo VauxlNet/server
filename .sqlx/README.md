@@ -1,7 +1,7 @@
-# sqlx offline query cache
+# SQLx offline query cache
 
-Dieses Verzeichnis enthält gecachte Query-Metadaten für `sqlx` im offline-Modus.
-Wird automatisch generiert durch: `cargo sqlx prepare --workspace`
+This directory contains generated query metadata for offline builds.
 
-Voraussetzung: lokale Postgres-DB muss laufen (via Docker im Container).
-Zum Aktualisieren: `docker exec docker-db-1 ...` (siehe CONTRIBUTING.md)
+Use the online mode of `scripts/check.sh` after changing a SQLx query. The
+script applies every migration to a disposable PostgreSQL database and checks
+the committed cache against that schema.

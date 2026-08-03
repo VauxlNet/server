@@ -96,7 +96,7 @@ pub mod rooms;
 
 pub use rooms::{
     assert_joined, create_room_with_state, generate_event_id, get_full_room_state,
-    get_room_messages, put_room_event, put_room_state_event,
+    get_room_messages, put_room_event_idempotent, put_room_state_event,
 };
 pub mod membership;
 
@@ -106,4 +106,4 @@ pub use membership::{
 };
 pub mod to_device;
 
-pub use to_device::{check_and_store_txn, pop_to_device_messages, store_to_device_messages};
+pub use to_device::{pop_to_device_messages, store_to_device_messages};

@@ -1,18 +1,30 @@
-name: Matrix API Smoke
+name: Matrix API Complement
 
 on: [pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   complement:
+    name: Complement ${{ matrix.test }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - TestVersionStructure
+          - TestLogin
+          - TestTyping
+          - TestRoomReceipts
+          - TestSendMessageWithTxn
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16-alpine
         env:
           POSTGRES_USER: vauxl
           POSTGRES_PASSWORD: vauxl
           POSTGRES_DB: vauxl
-          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -32,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Complement image
-        run: docker build -f docker/Dockerfile.complement -t vauxl-complement .
+        run: docker build --file docker/Dockerfile.complement --tag vauxl-complement .
       - uses: actions/checkout@v4
         with:
           repository: matrix-org/complement
@@ -41,7 +53,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: complement/go.mod
-      - name: Run Complement smoke test
+      - name: Run isolated Complement test
         working-directory: complement
         env:
           COMPLEMENT_BASE_IMAGE: vauxl-complement
@@ -49,4 +61,5 @@ jobs:
           COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS: "1"
           PASS_VAUXL_DATABASE__URL: postgres://vauxl:vauxl@host.docker.internal:5432/vauxl?sslmode=disable
           PASS_VAUXL_REDIS__URL: redis://host.docker.internal:6379
-        run: go test -v -run '^TestVersionStructure$' ./tests/csapi
+          COMPLEMENT_TEST: ${{ matrix.test }}
+        run: go test -v -count=1 -timeout 6m -run "^${COMPLEMENT_TEST}$" ./tests/csapi

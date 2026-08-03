@@ -92,29 +92,3 @@ pub async fn pop_to_device_messages(
 
     Ok(events)
 }
-
-/// Checks and records a transaction ID to prevent duplicate event sends.
-/// Returns true if this txn_id is new (should process), false if duplicate.
-pub async fn check_and_store_txn(
-    pool: &PgPool,
-    user_id: &str,
-    device_id: &str,
-    txn_id: &str,
-) -> Result<bool, MatrixError> {
-    // Store txn with 24h expiry using a dedicated table
-    let result = sqlx::query!(
-        r#"
-        INSERT INTO transaction_ids (user_id, device_id, txn_id, created_at)
-        VALUES ($1, $2, $3, NOW())
-        ON CONFLICT (user_id, device_id, txn_id) DO NOTHING
-        "#,
-        user_id,
-        device_id,
-        txn_id,
-    )
-    .execute(pool)
-    .await?;
-
-    // rows_affected = 0 means it already existed → duplicate
-    Ok(result.rows_affected() > 0)
-}

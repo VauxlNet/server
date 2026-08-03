@@ -1,7 +1,7 @@
 services:
   vauxl:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     restart: unless-stopped
     ports:
@@ -33,7 +33,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     # KEIN PORTS-BLOCK!
-    volumes: 
+    volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]

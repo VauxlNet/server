@@ -2,78 +2,73 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: 1
+  RUSTFLAGS: "-Dwarnings -Funsafe_code"
 
 jobs:
-
-  fmt:
-    name: Format
+  quality:
+    name: Quality gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt }
-      - run: cargo fmt --all -- --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features
+      - uses: taiki-e/install-action@cargo-deny
+      - run: ./scripts/check.sh --ci
 
-  test:
-    name: Tests
+  sqlx:
+    name: Migrations and SQLx metadata
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16-alpine
         env:
           POSTGRES_USER: vauxl
           POSTGRES_PASSWORD: vauxl
           POSTGRES_DB: vauxl
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports: ["5432:5432"]
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
+          --health-cmd "pg_isready -U vauxl -d vauxl"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
+          --health-retries 10
     env:
-      DATABASE_URL: postgres://vauxl:vauxl@localhost/vauxl?sslmode=disable
-      REDIS_URL: redis://localhost:6379
-      SQLX_OFFLINE: true
+      DATABASE_URL: postgres://vauxl:vauxl@localhost:5432/vauxl?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install psql client
-        run: sudo apt-get install -y postgresql-client
-      - name: Run migrations
-        run: |
-          PGPASSWORD=vauxl psql -h localhost -U vauxl -d vauxl \
-            -f migrations/001_initial_schema.sql
-      - name: Run tests
-        run: cargo test --all
+      - name: Install SQLx CLI
+        run: cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,postgres
+      - name: Apply all migrations
+        run: cargo sqlx migrate run --source migrations
+      - name: Verify concurrent transaction retries
+        run: cargo test --locked -p vauxl-matrix concurrent_message_transaction_creates_one_event -- --ignored
+      - name: Verify SQLx metadata online
+        run: cargo sqlx prepare --workspace --check -- --locked --all-targets --all-features
 
-  deny:
-    name: Security & Licenses (cargo-deny)
+  production-image:
+    name: Production image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories licenses bans sources
+      - name: Validate production Compose file
+        env:
+          DB_USER: vauxl
+          DB_PASSWORD: ci_only
+          DB_NAME: vauxl
+        run: docker compose -f docker/compose.prod.yml config --quiet
+      - name: Build production image
+        run: docker build --file docker/Dockerfile --tag vauxl-server:ci .

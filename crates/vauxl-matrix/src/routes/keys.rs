@@ -72,7 +72,7 @@ pub async fn upload_keys(
 
 #[derive(Debug, Deserialize)]
 pub struct KeysQueryRequest {
-    /// Map of user_id → [device_id] — empty list means all devices
+    /// Map of user IDs to `device_id` lists. An empty list means all devices.
     pub device_keys: HashMap<String, Vec<String>>,
     /// Token for incremental key updates — ignored in MVP
     pub token: Option<String>,

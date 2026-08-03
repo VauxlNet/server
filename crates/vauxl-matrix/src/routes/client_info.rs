@@ -15,13 +15,13 @@ use crate::{auth::AuthenticatedUser, error::MatrixError, state::SharedState};
 pub async fn capabilities() -> Json<Value> {
     Json(json!({
         "capabilities": {
-            "m.change_password": { "enabled": true },
+            "m.change_password": { "enabled": false },
             "m.room_versions": {
                 "default":   "11",
                 "available": { "11": "stable" }
             },
             "m.set_displayname": { "enabled": true },
-            "m.set_avatar_url":  { "enabled": true }
+            "m.set_avatar_url":  { "enabled": false }
         }
     }))
 }
