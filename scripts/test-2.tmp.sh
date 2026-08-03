@@ -1,13 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
 # Konfiguration
-BASE_URL="http://localhost:8008"
-# Ersetze diesen Token durch einen gültigen Token aus deiner Datenbank
-TOKEN="vauxl_7bd8baa5aaae4c3bb62610913191ded1"
-ROOM_ID="!db0db72633f44a37:localhost"
+BASE_URL="${BASE_URL:-http://localhost:8008}"
+ROOM_ID="${ROOM_ID:-!db0db72633f44a37:localhost}"
+: "${TOKEN:?Set TOKEN to a valid development access token}"
 
 echo "--- Starte API-Integritätsprüfung ---"
-echo "DEBUG: Token: $TOKEN"
 # 1. Test: Öffentliche Endpunkte (Erwartung: 200 OK)
 echo -e "\n[Prüfe öffentliche Endpunkte]"
 for path in "/_matrix/client/versions" "/_matrix/client/v3/capabilities"; do

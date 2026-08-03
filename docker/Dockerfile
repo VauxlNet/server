@@ -10,7 +10,7 @@ COPY .sqlx/ ./.sqlx/
 COPY migrations/ ./migrations/
 
 ENV SQLX_OFFLINE=true
-RUN cargo build --release -p vauxl-server
+RUN cargo build --locked --release -p vauxl-server
 
 # --- STAGE 2: Das winzige Runtime-Image ---
 FROM debian:bookworm-slim

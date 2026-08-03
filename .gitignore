@@ -37,3 +37,4 @@ Thumbs.db
 # Generated at runtime
 data/
 config/dev.toml
+.current_token

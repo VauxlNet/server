@@ -1,1 +1,1 @@
-P1 Sytest baseline: X/350 passing
+P1 Matrix API smoke runs five pinned official Complement checks in isolated jobs: `TestVersionStructure`, `TestLogin`, `TestTyping`, `TestRoomReceipts`, and `TestSendMessageWithTxn`. Broader Client Server API and federation compatibility remain unmeasured.

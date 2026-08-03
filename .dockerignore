@@ -1,0 +1,12 @@
+.git
+.github
+target
+**/target
+**/fuzz/artifacts
+**/fuzz/corpus
+.env
+.env.*
+.current_token
+config/dev.toml
+data
+*.log

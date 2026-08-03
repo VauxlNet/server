@@ -1,20 +1,65 @@
-name: Matrix Spec Compliance
+name: Matrix API Complement
+
 on: [pull_request]
 
+permissions:
+  contents: read
+
 jobs:
-  sytest:
+  complement:
+    name: Complement ${{ matrix.test }}
     runs-on: ubuntu-latest
-    continue-on-error: true  # don't block PRs until baseline established
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - TestVersionStructure
+          - TestLogin
+          - TestTyping
+          - TestRoomReceipts
+          - TestSendMessageWithTxn
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vauxl
+          POSTGRES_PASSWORD: vauxl
+          POSTGRES_DB: vauxl
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vauxl -d vauxl"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - name: Build server
-        run: cargo build --release -p vauxl-server
-      - name: Run Sytest
-        uses: matrix-org/sytest-action@v0
+      - name: Build Complement image
+        run: docker build --file docker/Dockerfile.complement --tag vauxl-complement .
+      - uses: actions/checkout@v4
         with:
-          server-binary: target/release/vauxl-server
-      - name: Upload results
-        uses: actions/upload-artifact@v4
+          repository: matrix-org/complement
+          ref: c466460957697faa4ec36ce1b37921cef238fb91
+          path: complement
+      - uses: actions/setup-go@v5
         with:
-          name: sytest-results
-          path: sytest-results.xml
+          go-version-file: complement/go.mod
+      - name: Run isolated Complement test
+        working-directory: complement
+        env:
+          COMPLEMENT_BASE_IMAGE: vauxl-complement
+          COMPLEMENT_SHARE_ENV_PREFIX: PASS_
+          COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS: "1"
+          PASS_VAUXL_DATABASE__URL: postgres://vauxl:vauxl@host.docker.internal:5432/vauxl?sslmode=disable
+          PASS_VAUXL_REDIS__URL: redis://host.docker.internal:6379
+          COMPLEMENT_TEST: ${{ matrix.test }}
+        run: go test -v -count=1 -timeout 6m -run "^${COMPLEMENT_TEST}$" ./tests/csapi

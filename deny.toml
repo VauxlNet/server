@@ -16,8 +16,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 deny = [
-    { name = "openssl",     wrappers = ["webauthn-attestation-ca", "webauthn-rs-core"] },
-    { name = "openssl-sys", wrappers = ["openssl", "webauthn-attestation-ca", "webauthn-rs-core"] },
+    { name = "openssl" },
+    { name = "openssl-sys" },
 ]
 
 [advisories]
