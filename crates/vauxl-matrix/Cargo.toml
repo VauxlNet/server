@@ -25,7 +25,7 @@ serde_urlencoded = "0.7"
 redis = { workspace = true}
 reqwest = { version = "0.11", features = ["json"] }
 urlencoding = "2.1"
-#vauxl-federation = { path = "../vauxl-federation/" }
+vauxl-federation = { path = "../vauxl-federation" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
