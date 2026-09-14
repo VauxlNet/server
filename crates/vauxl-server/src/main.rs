@@ -23,6 +23,10 @@ use vauxl_matrix::{
             delete_room_alias, get_room_alias, public_rooms_full, public_rooms_post, put_room_alias,
         },
         ephemeral::{send_receipt, send_typing},
+        federation::{
+            backfill, federation_room_state, federation_room_state_ids, federation_send, get_event,
+            key_query_remote, make_join, send_join,
+        },
         keys::{claim_keys, query_keys, upload_keys},
         login::{get_login_flows, login},
         media::{download_media, download_media_with_name, thumbnail_media, upload_media},
@@ -270,6 +274,28 @@ async fn main() -> Result<()> {
             "/_matrix/client/v3/thirdparty/protocols",
             get(third_party_protocols),
         )
+        // Federation SS API
+        .route("/_matrix/federation/v1/send/:txnId", put(federation_send))
+        .route(
+            "/_matrix/federation/v1/make_join/:roomId/:userId",
+            get(make_join),
+        )
+        .route(
+            "/_matrix/federation/v2/send_join/:roomId/:eventId",
+            put(send_join),
+        )
+        .route("/_matrix/federation/v1/backfill/:roomId", get(backfill))
+        .route(
+            "/_matrix/federation/v1/state/:roomId",
+            get(federation_room_state),
+        )
+        .route(
+            "/_matrix/federation/v1/state_ids/:roomId",
+            get(federation_room_state_ids),
+        )
+        .route("/_matrix/federation/v1/event/:eventId", get(get_event))
+        // Key query (remote servers asking for our keys or proxying)
+        .route("/_matrix/key/v2/query/:serverName", get(key_query_remote))
         // Whoami
         .route("/_matrix/client/v3/account/whoami", get(whoami))
         // Health

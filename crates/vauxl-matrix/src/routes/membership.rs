@@ -78,6 +78,13 @@ async fn join_room_inner(
         return Err(MatrixError::NotFound);
     }
 
+    // Check if room is on a remote server
+    let room_server = room_id.split(':').nth(1).unwrap_or("");
+    if room_server != server_name {
+        // Remote room — use federation join
+        return crate::routes::federation::join_remote_room(state, room_id, user_id).await;
+    }
+
     // Already joined — idempotent, just return ok
     if get_membership(&state.db, room_id, user_id).await? == Some("join".into()) {
         return Ok(());
