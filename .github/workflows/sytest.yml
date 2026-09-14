@@ -1,10 +1,9 @@
-name: Matrix Spec Compliance
+name: Matrix Federation Smoke Checks
 on: [pull_request]
 
 jobs:
-  sytest:
+  matrix-smoke:
     runs-on: ubuntu-latest
-    continue-on-error: true  # don't block PRs until baseline established
     services:
       postgres:
         image: postgres:16
