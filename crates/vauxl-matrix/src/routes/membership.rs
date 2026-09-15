@@ -16,10 +16,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::AuthenticatedUser,
-    db::{
-        assert_joined, get_join_rule, get_membership, resolve_room_alias, room_exists,
-        set_membership, store_invite_notification,
-    },
+    db::{resolve_room_alias, room_exists, set_membership, store_invite_notification},
     error::MatrixError,
     state::SharedState,
 };
@@ -29,7 +26,7 @@ use crate::{
 #[derive(Debug, Deserialize, Default)]
 pub struct JoinRequest {
     pub reason: Option<String>,
-    pub third_party_signed: Option<Value>, // ignored in MVP
+    pub third_party_signed: Option<Value>,
 }
 
 /// POST /_matrix/client/v3/join/{roomIdOrAlias}
@@ -37,8 +34,11 @@ pub async fn join_room_by_id_or_alias(
     State(state): State<SharedState>,
     auth: AuthenticatedUser,
     Path(room_id_or_alias): Path<String>,
-    Json(_body): Json<JoinRequest>,
+    Json(body): Json<JoinRequest>,
 ) -> Result<Json<Value>, MatrixError> {
+    if body.third_party_signed.is_some() {
+        return Err(MatrixError::Forbidden);
+    }
     let server_name = &state.config.server.server_name;
 
     // Resolve alias to room_id if needed
@@ -60,8 +60,11 @@ pub async fn join_room(
     State(state): State<SharedState>,
     auth: AuthenticatedUser,
     Path(room_id): Path<String>,
-    Json(_body): Json<JoinRequest>,
+    Json(body): Json<JoinRequest>,
 ) -> Result<Json<Value>, MatrixError> {
+    if body.third_party_signed.is_some() {
+        return Err(MatrixError::Forbidden);
+    }
     let server_name = &state.config.server.server_name;
     join_room_inner(&state, &auth.user_id, &room_id, server_name).await?;
     Ok(Json(json!({ "room_id": room_id })))
@@ -86,27 +89,6 @@ async fn join_room_inner(
     // Room must exist
     if !room_exists(&state.db, room_id).await? {
         return Err(MatrixError::NotFound);
-    }
-
-    // Already joined — idempotent, just return ok
-    if get_membership(&state.db, room_id, user_id).await? == Some("join".into()) {
-        return Ok(());
-    }
-
-    // Check join rules
-    let join_rule = get_join_rule(&state.db, room_id).await?;
-    match join_rule.as_str() {
-        "public" => {
-            // Anyone can join
-        }
-        "invite" => {
-            // Must have a pending invite
-            let membership = get_membership(&state.db, room_id, user_id).await?;
-            if membership.as_deref() != Some("invite") {
-                return Err(MatrixError::Forbidden);
-            }
-        }
-        _ => return Err(MatrixError::Forbidden),
     }
 
     set_membership(
@@ -140,13 +122,6 @@ pub async fn leave_room(
     Json(_body): Json<LeaveRequest>,
 ) -> Result<Json<Value>, MatrixError> {
     let server_name = &state.config.server.server_name;
-
-    // Must be joined or invited to leave
-    let membership = get_membership(&state.db, &room_id, &auth.user_id).await?;
-    match membership.as_deref() {
-        Some("join") | Some("invite") => {}
-        _ => return Err(MatrixError::Forbidden),
-    }
 
     set_membership(
         &state.db,
@@ -185,15 +160,6 @@ pub async fn invite_to_room(
     Json(body): Json<InviteRequest>,
 ) -> Result<Json<Value>, MatrixError> {
     let server_name = &state.config.server.server_name;
-
-    // Inviter must be joined
-    assert_joined(&state.db, &room_id, &auth.user_id).await?;
-
-    // Don't double-invite
-    let existing = get_membership(&state.db, &room_id, &body.user_id).await?;
-    if existing.as_deref() == Some("invite") || existing.as_deref() == Some("join") {
-        return Ok(Json(json!({})));
-    }
 
     // Write the invite membership event
     set_membership(
@@ -242,18 +208,6 @@ pub async fn kick_from_room(
 ) -> Result<Json<Value>, MatrixError> {
     let server_name = &state.config.server.server_name;
 
-    // Kicker must be joined
-    assert_joined(&state.db, &room_id, &auth.user_id).await?;
-
-    // Target must be joined
-    if get_membership(&state.db, &room_id, &body.user_id)
-        .await?
-        .as_deref()
-        != Some("join")
-    {
-        return Err(MatrixError::Forbidden);
-    }
-
     set_membership(
         &state.db,
         &room_id,
@@ -292,8 +246,6 @@ pub async fn ban_from_room(
     Json(body): Json<BanRequest>,
 ) -> Result<Json<Value>, MatrixError> {
     let server_name = &state.config.server.server_name;
-
-    assert_joined(&state.db, &room_id, &auth.user_id).await?;
 
     set_membership(
         &state.db,

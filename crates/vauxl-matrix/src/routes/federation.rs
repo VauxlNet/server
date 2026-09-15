@@ -7,17 +7,21 @@
 //! P1-019: Sending federation events (/send)
 
 use axum::{
-    extract::{Path, State},
-    http::HeaderMap,
+    extract::{OriginalUri, Path, State},
+    http::{HeaderMap, Method},
     Json,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::{
-    db::rooms::{generate_event_id, get_full_room_state, put_room_state_event},
+    db::{
+        history_visibility::filter_for_server,
+        room_auth::{authorize_event, lock_room},
+        rooms::{get_full_room_state, populate_event_auth},
+    },
     error::MatrixError,
-    event_signing::sign_event,
+    federation_auth::{authenticate, verify_event, with_event_id},
     state::SharedState,
 };
 
@@ -29,62 +33,16 @@ pub async fn key_query_remote(
     State(state): State<SharedState>,
     Path(server_name): Path<String>,
 ) -> Result<Json<Value>, MatrixError> {
-    // If querying ourselves, return our own keys
     if server_name == state.config.server.server_name {
-        return key_v2_server_inner(&state);
+        return crate::well_known::key_v2_server(State(state)).await;
     }
-
     if !is_valid_server_name(&server_name) {
         return Err(MatrixError::BadJson("Invalid server name".into()));
     }
-
-    // Otherwise fetch from the remote server and return
-    // This is used during event verification when we need a remote server's key
-    let resolved = vauxl_federation::resolver::resolve_server_name(&server_name).await;
-    let url = format!(
-        "https://{}:{}/_matrix/key/v2/server",
-        resolved.host, resolved.port
-    );
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .send()
+    let document = vauxl_federation::keys::fetch_key_document(&server_name)
         .await
-        .map_err(|e| MatrixError::Internal(format!("Key fetch failed: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(MatrixError::Internal(format!(
-            "Key server returned {}",
-            resp.status()
-        )));
-    }
-
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| MatrixError::Internal(format!("Key parse failed: {e}")))?;
-
-    Ok(Json(body))
-}
-
-fn key_v2_server_inner(state: &SharedState) -> Result<Json<Value>, MatrixError> {
-    use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine as _};
-
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    Ok(Json(json!({
-        "server_name":    state.config.server.server_name,
-        "valid_until_ts": now_ms + 86_400_000,
-        "verify_keys": {
-            state.signing_key.key_id.clone(): {
-                "key": BASE64.encode(state.signing_key.verifying_key.as_bytes())
-            }
-        },
-        "old_verify_keys": {}
-    })))
+        .map_err(|_| MatrixError::Forbidden)?;
+    Ok(Json(document))
 }
 
 // ── P1-017: Federation join flow (receiving side) ─────────────────────────
@@ -95,9 +53,10 @@ pub async fn make_join(
     State(state): State<SharedState>,
     Path((room_id, user_id)): Path<(String, String)>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Json<Value>, MatrixError> {
-    let server_name = &state.config.server.server_name;
-    let origin = require_federation_origin(&headers, server_name)?;
+    let origin = authenticate(&state, &headers, &method, &uri, None).await?;
 
     if !is_valid_room_id(&room_id) || !is_valid_user_id(&user_id) {
         return Err(MatrixError::BadJson("Invalid room or user ID".into()));
@@ -106,44 +65,28 @@ pub async fn make_join(
         return Err(MatrixError::Forbidden);
     }
 
-    // Verify room exists
-    let room_exists = sqlx::query!("SELECT room_id FROM rooms WHERE room_id = $1", room_id,)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(MatrixError::from)?;
-
-    if room_exists.is_none() {
-        return Err(MatrixError::NotFound);
-    }
-
-    // Check join rules
-    let join_rule = sqlx::query!(
-        r#"
-        SELECT e.content->>'join_rule' AS join_rule
-        FROM room_state rs
-        JOIN events e ON e.event_id = rs.event_id
-        WHERE rs.room_id = $1 AND rs.event_type = 'm.room.join_rules'
-        "#,
-        room_id,
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, &room_id).await?;
+    require_federated_room(&mut *tx, &room_id).await?;
+    require_server_acl(&mut *tx, &room_id, &origin).await?;
+    authorize_event(
+        &mut tx,
+        &room_id,
+        &user_id,
+        "m.room.member",
+        Some(&user_id),
+        &json!({"membership":"join"}),
     )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(MatrixError::from)?
-    .and_then(|r| r.join_rule)
-    .unwrap_or_else(|| "invite".to_string());
-
-    if join_rule != "public" {
-        return Err(MatrixError::Forbidden);
-    }
+    .await?;
 
     let now_ms = now_millis();
     // Return a join event template for the remote server to fill in and sign
-    let template = json!({
+    let mut template = json!({
         "type":       "m.room.member",
         "room_id":    room_id,
         "sender":     user_id,
         "state_key":  user_id,
-        "origin":     server_name,
+        "origin":     origin,
         "origin_server_ts": now_ms,
         "content": { "membership": "join" },
         "auth_events":  [],
@@ -151,6 +94,9 @@ pub async fn make_join(
         "depth":        1,
         "room_version": "11"
     });
+
+    populate_event_auth(&mut tx, &room_id, &mut template).await?;
+    tx.commit().await?;
 
     Ok(Json(json!({
         "room_version": "11",
@@ -164,99 +110,40 @@ pub async fn send_join(
     State(state): State<SharedState>,
     Path((room_id, event_id)): Path<(String, String)>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, MatrixError> {
-    let server_name = &state.config.server.server_name;
-    let origin = require_federation_origin(&headers, server_name)?;
-
-    if !is_valid_room_id(&room_id) || !is_safe_identifier(&event_id) {
-        return Err(MatrixError::BadJson("Invalid room or event ID".into()));
-    }
-
-    let room_exists = sqlx::query!("SELECT 1 AS exists FROM rooms WHERE room_id = $1", room_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(MatrixError::from)?;
-    if room_exists.is_none() {
-        return Err(MatrixError::NotFound);
-    }
-
-    // Verify this is actually a join event
-    let event_type = body.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let membership = body
-        .get("content")
-        .and_then(|c| c.get("membership"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if event_type != "m.room.member" || membership != "join" {
-        return Err(MatrixError::BadJson(
-            "Expected m.room.member join event".into(),
-        ));
-    }
-
-    let joining_user = body
-        .get("sender")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MatrixError::BadJson("Missing sender".into()))?
-        .to_owned();
-
-    let body_room_id = body
-        .get("room_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MatrixError::BadJson("Missing room_id".into()))?;
-    if body_room_id != room_id {
-        return Err(MatrixError::BadJson("Room ID does not match path".into()));
-    }
-
-    let body_event_id = body
-        .get("event_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MatrixError::BadJson("Missing event_id".into()))?;
-    if body_event_id != event_id {
-        return Err(MatrixError::BadJson("Event ID does not match path".into()));
-    }
-
-    let state_key = body
-        .get("state_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MatrixError::BadJson("Missing state_key".into()))?;
-    if state_key != joining_user || !is_valid_user_id(&joining_user) {
-        return Err(MatrixError::BadJson("Invalid joining user".into()));
-    }
-    if user_server_name(&joining_user) != Some(origin.as_str()) {
+    let origin = authenticate(&state, &headers, &method, &uri, Some(&body)).await?;
+    let body = with_event_id(&body)?;
+    if user_server_name(required_string(&body, "sender")?) != Some(origin.as_str()) {
         return Err(MatrixError::Forbidden);
     }
-
-    tracing::info!(
-        room_id      = %room_id,
-        joining_user = %joining_user,
-        origin       = %origin,
-        "Processing federation join"
-    );
-
-    // Store the join membership event
-    put_room_state_event(
-        &state.db,
-        &room_id,
-        "m.room.member",
-        &joining_user,
-        &joining_user,
-        json!({ "membership": "join", "displayname": null, "avatar_url": null }),
-        server_name,
-        &state.signing_key,
-    )
-    .await?;
-
-    // Return the full room state for the joining server
-    let state_events = get_full_room_state(&state.db, &room_id).await?;
-
-    Ok(Json(json!({
-        "origin":          server_name,
-        "auth_chain":      [],
-        "state":           state_events,
-        "event":           body,
-    })))
+    if body.get("room_id").and_then(Value::as_str) != Some(&room_id)
+        || body.get("event_id").and_then(Value::as_str) != Some(&event_id)
+        || body.get("type").and_then(Value::as_str) != Some("m.room.member")
+        || body
+            .get("content")
+            .and_then(|v| v.get("membership"))
+            .and_then(Value::as_str)
+            != Some("join")
+        || body.get("sender") != body.get("state_key")
+    {
+        return Err(MatrixError::BadJson(
+            "Expected matching self-join event".into(),
+        ));
+    }
+    process_incoming_pdu(&state, &body, &origin, true).await?;
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, &room_id).await?;
+    require_federated_room(&mut *tx, &room_id).await?;
+    require_server_acl(&mut *tx, &room_id, &origin).await?;
+    require_server_participation(&mut *tx, &room_id, &origin).await?;
+    let state_events = get_full_room_state(&mut *tx, &room_id).await?;
+    let state_events: Vec<Value> = state_events.into_iter().map(wire_pdu).collect();
+    Ok(Json(
+        json!({"origin":state.config.server.server_name, "auth_chain":[], "state":state_events, "event":wire_pdu(body)}),
+    ))
 }
 
 // ── P1-018: Backfill & state ──────────────────────────────────────────────
@@ -266,11 +153,19 @@ pub async fn backfill(
     State(state): State<SharedState>,
     Path(room_id): Path<String>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Json<Value>, MatrixError> {
-    let _origin = require_federation_origin(&headers, &state.config.server.server_name)?;
+    let origin = authenticate(&state, &headers, &method, &uri, None).await?;
     if !is_valid_room_id(&room_id) {
         return Err(MatrixError::BadJson("Invalid room ID".into()));
     }
+
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, &room_id).await?;
+    require_federated_room(&mut *tx, &room_id).await?;
+    require_server_acl(&mut *tx, &room_id, &origin).await?;
+    require_server_participation(&mut *tx, &room_id, &origin).await?;
 
     let rows = sqlx::query!(
         r#"
@@ -281,7 +176,7 @@ pub async fn backfill(
         "#,
         room_id,
     )
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(MatrixError::from)?;
 
@@ -289,6 +184,8 @@ pub async fn backfill(
         .into_iter()
         .filter_map(|r| serde_json::from_value(r.raw_event).ok())
         .collect();
+    let events = filter_for_server(&mut tx, &room_id, events, &origin).await?;
+    let events: Vec<Value> = events.into_iter().map(wire_pdu).collect();
 
     Ok(Json(json!({
         "origin": state.config.server.server_name,
@@ -301,13 +198,23 @@ pub async fn federation_room_state(
     State(state): State<SharedState>,
     Path(room_id): Path<String>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Json<Value>, MatrixError> {
-    let _origin = require_federation_origin(&headers, &state.config.server.server_name)?;
+    let origin = authenticate(&state, &headers, &method, &uri, None).await?;
+    reject_historical_state_query(&uri)?;
     if !is_valid_room_id(&room_id) {
         return Err(MatrixError::BadJson("Invalid room ID".into()));
     }
 
-    let state_events = get_full_room_state(&state.db, &room_id).await?;
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, &room_id).await?;
+    require_federated_room(&mut *tx, &room_id).await?;
+    require_server_acl(&mut *tx, &room_id, &origin).await?;
+    require_server_participation(&mut *tx, &room_id, &origin).await?;
+
+    let state_events = get_full_room_state(&mut *tx, &room_id).await?;
+    let state_events: Vec<Value> = state_events.into_iter().map(wire_pdu).collect();
 
     Ok(Json(json!({
         "pdus":       state_events,
@@ -320,21 +227,25 @@ pub async fn federation_room_state_ids(
     State(state): State<SharedState>,
     Path(room_id): Path<String>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Json<Value>, MatrixError> {
-    let _origin = require_federation_origin(&headers, &state.config.server.server_name)?;
+    let origin = authenticate(&state, &headers, &method, &uri, None).await?;
+    reject_historical_state_query(&uri)?;
     if !is_valid_room_id(&room_id) {
         return Err(MatrixError::BadJson("Invalid room ID".into()));
     }
 
-    let rows = sqlx::query!(
-        "SELECT event_id FROM room_state WHERE room_id = $1",
-        room_id,
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(MatrixError::from)?;
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, &room_id).await?;
+    require_federated_room(&mut *tx, &room_id).await?;
+    require_server_acl(&mut *tx, &room_id, &origin).await?;
+    require_server_participation(&mut *tx, &room_id, &origin).await?;
 
-    let ids: Vec<String> = rows.into_iter().map(|r| r.event_id).collect();
+    let ids: Vec<String> = sqlx::query_scalar("SELECT event_id FROM room_state WHERE room_id = $1")
+        .bind(&room_id)
+        .fetch_all(&mut *tx)
+        .await?;
 
     Ok(Json(json!({
         "pdu_ids":    ids,
@@ -347,14 +258,27 @@ pub async fn get_event(
     State(state): State<SharedState>,
     Path(event_id): Path<String>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Json<Value>, MatrixError> {
-    let _origin = require_federation_origin(&headers, &state.config.server.server_name)?;
+    let origin = authenticate(&state, &headers, &method, &uri, None).await?;
     if event_id.is_empty() || !is_safe_identifier(&event_id) {
         return Err(MatrixError::BadJson("Invalid event ID".into()));
     }
 
-    let row = sqlx::query!("SELECT raw_event FROM events WHERE event_id = $1", event_id,)
+    let room_id: String = sqlx::query_scalar("SELECT room_id FROM events WHERE event_id = $1")
+        .bind(&event_id)
         .fetch_optional(&state.db)
+        .await?
+        .ok_or(MatrixError::NotFound)?;
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, &room_id).await?;
+    require_federated_room(&mut *tx, &room_id).await?;
+    require_server_acl(&mut *tx, &room_id, &origin).await?;
+    require_server_participation(&mut *tx, &room_id, &origin).await?;
+
+    let row = sqlx::query!("SELECT raw_event FROM events WHERE event_id = $1", event_id,)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(MatrixError::from)?
         .ok_or(MatrixError::NotFound)?;
@@ -362,6 +286,8 @@ pub async fn get_event(
     let event: Value =
         serde_json::from_value(row.raw_event).map_err(|e| MatrixError::Internal(e.to_string()))?;
 
+    let mut events = filter_for_server(&mut tx, &room_id, vec![event], &origin).await?;
+    let event = wire_pdu(events.pop().ok_or(MatrixError::Forbidden)?);
     Ok(Json(json!({
         "origin": state.config.server.server_name,
         "pdus":   [event]
@@ -376,15 +302,27 @@ pub async fn federation_send(
     State(state): State<SharedState>,
     Path(txn_id): Path<String>,
     headers: HeaderMap,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, MatrixError> {
-    let origin = require_federation_origin(&headers, &state.config.server.server_name)?;
+    let origin = authenticate(&state, &headers, &method, &uri, Some(&body)).await?;
 
+    if body
+        .get("origin")
+        .is_some_and(|value| value.as_str() != Some(&origin))
+    {
+        return Err(MatrixError::Forbidden);
+    }
     let pdus = body
         .get("pdus")
         .and_then(|v| v.as_array())
         .cloned()
         .ok_or_else(|| MatrixError::BadJson("Missing pdus array".into()))?;
+
+    if pdus.len() > 50 {
+        return Err(MatrixError::BadJson("Too many PDUs".into()));
+    }
 
     tracing::debug!(
         origin  = %origin,
@@ -396,13 +334,15 @@ pub async fn federation_send(
     let mut results = HashMap::new();
 
     for pdu in &pdus {
+        let normalized = with_event_id(pdu);
+        let pdu = normalized.as_ref().unwrap_or(pdu);
         let event_id = pdu
             .get("event_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_owned();
 
-        match process_incoming_pdu(&state, pdu, &origin).await {
+        match process_incoming_pdu(&state, pdu, &origin, false).await {
             Ok(()) => {
                 results.insert(event_id, json!({}));
             }
@@ -425,6 +365,7 @@ async fn process_incoming_pdu(
     state: &crate::state::AppState,
     pdu: &Value,
     origin: &str,
+    joining: bool,
 ) -> Result<(), MatrixError> {
     let event_type = required_string(pdu, "type")?;
     let room_id = required_string(pdu, "room_id")?;
@@ -453,40 +394,36 @@ async fn process_incoming_pdu(
     {
         return Err(MatrixError::BadJson("Invalid event fields".into()));
     }
-    if user_server_name(sender) != Some(origin) {
-        return Err(MatrixError::Forbidden);
+    verify_event(state, pdu).await?;
+    let mut tx = state.db.begin().await?;
+    lock_room(&mut tx, room_id).await?;
+    require_federated_room(&mut *tx, room_id).await?;
+    require_server_acl(&mut *tx, room_id, origin).await?;
+    require_server_acl(
+        &mut *tx,
+        room_id,
+        user_server_name(sender).ok_or(MatrixError::Forbidden)?,
+    )
+    .await?;
+    if !joining {
+        require_server_participation(&mut *tx, room_id, origin).await?;
     }
-    if let Some(event_origin) = event_server_name(event_id) {
-        if event_origin != origin {
-            return Err(MatrixError::Forbidden);
-        }
-    }
-    if let Some(event_origin) = pdu.get("origin") {
-        if event_origin.as_str() != Some(origin) {
-            return Err(MatrixError::Forbidden);
-        }
-    }
-
-    let room_exists = sqlx::query!("SELECT 1 AS exists FROM rooms WHERE room_id = $1", room_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(MatrixError::from)?;
-    if room_exists.is_none() {
-        return Err(MatrixError::NotFound);
-    }
+    authorize_event(&mut tx, room_id, sender, event_type, state_key, &content).await?;
 
     // Skip if we already have this event
     let exists = sqlx::query!(
         "SELECT 1 AS exists FROM events WHERE event_id = $1",
         event_id,
     )
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(MatrixError::from)?;
 
     if exists.is_some() {
         return Ok(());
     }
+
+    require_current_event_auth(&mut tx, room_id, pdu).await?;
 
     // Store the event
     sqlx::query!(
@@ -505,7 +442,7 @@ async fn process_incoming_pdu(
         content,
         pdu,
     )
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(MatrixError::from)?;
 
@@ -523,7 +460,7 @@ async fn process_incoming_pdu(
             sk,
             event_id,
         )
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(MatrixError::from)?;
 
@@ -544,11 +481,13 @@ async fn process_incoming_pdu(
                 sk,
                 membership,
             )
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(MatrixError::from)?;
         }
     }
+
+    tx.commit().await?;
 
     // Wake /sync handlers so local users see the new event
     let _ = state.wake_tx.send(crate::state::WakeEvent {
@@ -564,236 +503,129 @@ async fn process_incoming_pdu(
 /// Join a room on a remote server.
 /// Called when a local user wants to join a room that lives on another homeserver.
 pub async fn join_remote_room(
-    state: &crate::state::AppState,
-    room_id: &str,
-    user_id: &str,
+    _state: &crate::state::AppState,
+    _room_id: &str,
+    _user_id: &str,
 ) -> Result<(), MatrixError> {
-    let server_name = &state.config.server.server_name;
+    Err(MatrixError::BadJson("Remote room bootstrap requires auth-chain validation and state resolution, which are not supported yet".into()))
+}
 
-    // Extract the remote server from the room ID
-    if !is_valid_room_id(room_id) || !is_valid_user_id(user_id) {
-        return Err(MatrixError::BadJson("Invalid room or user ID".into()));
+/// V11 reference IDs belong to the storage/client representation, not the signed
+/// wire PDU. Strip them at every federation response boundary.
+fn wire_pdu(mut event: Value) -> Value {
+    if let Some(object) = event.as_object_mut() {
+        object.remove("event_id");
     }
+    event
+}
 
-    let remote_server = room_id
-        .strip_prefix('!')
-        .and_then(|room| room.split_once(':'))
-        .map(|(_, server)| server)
-        .ok_or_else(|| MatrixError::BadJson("Invalid room ID".into()))?;
-
-    if remote_server == server_name {
-        return Err(MatrixError::BadJson("Room is local".into()));
+fn reject_historical_state_query(uri: &axum::http::Uri) -> Result<(), MatrixError> {
+    let query: Vec<(String, String)> = serde_urlencoded::from_str(uri.query().unwrap_or_default())
+        .map_err(|_| MatrixError::BadJson("Invalid state query".into()))?;
+    if query.iter().any(|(key, _)| key == "event_id") {
+        return Err(MatrixError::BadJson(
+            "Historical state reconstruction is not supported".into(),
+        ));
     }
-
-    tracing::info!(
-        room_id       = %room_id,
-        user_id       = %user_id,
-        remote_server = %remote_server,
-        "Initiating federation room join"
-    );
-
-    // Step 1: make_join — get the join event template
-    let make_join_path = format!(
-        "/_matrix/federation/v1/make_join/{}/{}",
-        urlencoding::encode(room_id),
-        urlencoding::encode(user_id),
-    );
-
-    let make_join_resp = vauxl_federation::client::send_federation_request(
-        "GET",
-        server_name,
-        remote_server,
-        &make_join_path,
-        None,
-        &state.signing_key.signing_key,
-        &state.signing_key.key_id,
-    )
-    .await
-    .map_err(|e| MatrixError::Internal(format!("make_join failed: {e}")))?;
-
-    if !make_join_resp.status().is_success() {
-        return Err(MatrixError::Internal(format!(
-            "make_join returned {}",
-            make_join_resp.status()
-        )));
-    }
-
-    let make_join_body: Value = make_join_resp
-        .json()
-        .await
-        .map_err(|e| MatrixError::Internal(format!("make_join parse: {e}")))?;
-
-    let mut join_event = make_join_body
-        .get("event")
-        .cloned()
-        .ok_or_else(|| MatrixError::Internal("No event in make_join response".into()))?;
-
-    // Step 2: fill in and sign the event
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    let event_id = generate_event_id(server_name);
-
-    if let Some(obj) = join_event.as_object_mut() {
-        obj.insert("event_id".into(), json!(event_id));
-        obj.insert("origin".into(), json!(server_name));
-        obj.insert("origin_server_ts".into(), json!(now_ms));
-        obj.insert("sender".into(), json!(user_id));
-        obj.insert("state_key".into(), json!(user_id));
-        obj.insert("content".into(), json!({"membership": "join"}));
-    }
-
-    sign_event(&mut join_event, server_name, &state.signing_key);
-
-    // Step 3: send_join — submit the signed event
-    let send_join_path = format!(
-        "/_matrix/federation/v2/send_join/{}/{}",
-        urlencoding::encode(room_id),
-        urlencoding::encode(&event_id),
-    );
-
-    let send_join_resp = vauxl_federation::client::send_federation_request(
-        "PUT",
-        server_name,
-        remote_server,
-        &send_join_path,
-        Some(&join_event),
-        &state.signing_key.signing_key,
-        &state.signing_key.key_id,
-    )
-    .await
-    .map_err(|e| MatrixError::Internal(format!("send_join failed: {e}")))?;
-
-    if !send_join_resp.status().is_success() {
-        return Err(MatrixError::Internal(format!(
-            "send_join returned {}",
-            send_join_resp.status()
-        )));
-    }
-
-    let send_join_body: Value = send_join_resp
-        .json()
-        .await
-        .map_err(|e| MatrixError::Internal(format!("send_join parse: {e}")))?;
-
-    // Step 4 & 5: store room state from response
-    let room_exists = sqlx::query!("SELECT 1 AS exists FROM rooms WHERE room_id = $1", room_id,)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(MatrixError::from)?;
-
-    if room_exists.is_none() {
-        sqlx::query!("INSERT INTO rooms (room_id) VALUES ($1)", room_id)
-            .execute(&state.db)
-            .await
-            .map_err(MatrixError::from)?;
-    }
-
-    // Import state events from the remote server
-    if let Some(state_events) = send_join_body.get("state").and_then(|v| v.as_array()) {
-        for event in state_events {
-            let _ = process_incoming_pdu(state, event, remote_server).await;
-        }
-    }
-
-    // Mark local user as joined
-    sqlx::query!(
-        r#"
-        INSERT INTO room_members (room_id, user_id, membership)
-        VALUES ($1, $2, 'join')
-        ON CONFLICT (room_id, user_id) DO UPDATE SET membership = 'join'
-        "#,
-        room_id,
-        user_id,
-    )
-    .execute(&state.db)
-    .await
-    .map_err(MatrixError::from)?;
-
-    tracing::info!(
-        room_id = %room_id,
-        user_id = %user_id,
-        "Federation join completed"
-    );
-
     Ok(())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Extract the origin server from the X-Matrix Authorization header.
-pub fn extract_federation_origin(headers: &HeaderMap) -> Option<String> {
-    parse_federation_auth(headers).map(|auth| auth.origin)
+fn acl_allows(content: Value, server: &str) -> Result<bool, MatrixError> {
+    if !is_valid_server_name(server) {
+        return Ok(false);
+    }
+    let mut acl: ruma::events::room::server_acl::RoomServerAclEventContent =
+        serde_json::from_value(content).map_err(|_| MatrixError::Forbidden)?;
+    // Matrix server ACL matching is case-insensitive and ignores ports. Ruma
+    // handles host/port/IP semantics; normalize case before its glob matching.
+    for pattern in acl.allow.iter_mut().chain(acl.deny.iter_mut()) {
+        pattern.make_ascii_lowercase();
+    }
+    let server = server.to_ascii_lowercase();
+    let server =
+        <&ruma::ServerName>::try_from(server.as_str()).map_err(|_| MatrixError::Forbidden)?;
+    Ok(acl.is_allowed(server))
 }
 
-struct FederationAuth {
-    origin: String,
-    destination: String,
-    key: String,
-    signature: String,
-}
-
-fn parse_federation_auth(headers: &HeaderMap) -> Option<FederationAuth> {
-    let auth = headers.get("authorization")?.to_str().ok()?;
-    let fields = auth.strip_prefix("X-Matrix ")?;
-    let mut origin = None;
-    let mut destination = None;
-    let mut key = None;
-    let mut signature = None;
-
-    for field in fields.split(',') {
-        let (name, value) = field.trim().split_once('=')?;
-        let value = value.trim();
-        let value = value
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-            .unwrap_or(value);
-        if value.is_empty()
-            || value
-                .chars()
-                .any(|character| character.is_control() || character.is_whitespace())
-        {
-            return None;
-        }
-        match name.trim() {
-            "origin" => origin = Some(value.to_owned()),
-            "destination" => destination = Some(value.to_owned()),
-            "key" => key = Some(value.to_owned()),
-            "sig" => signature = Some(value.to_owned()),
-            _ => {}
+async fn require_server_acl<'e, E>(db: E, room_id: &str, server: &str) -> Result<(), MatrixError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let content: Option<Value> = sqlx::query_scalar("SELECT e.content FROM room_state rs JOIN events e ON e.event_id = rs.event_id WHERE rs.room_id = $1 AND rs.event_type = 'm.room.server_acl' AND rs.state_key = ''")
+        .bind(room_id).fetch_optional(db).await?;
+    if let Some(content) = content {
+        if !acl_allows(content, server)? {
+            return Err(MatrixError::Forbidden);
         }
     }
+    Ok(())
+}
 
-    let origin = origin?;
-    let destination = destination?;
-    let key = key?;
-    let signature = signature?;
-    if !is_valid_server_name(&origin)
-        || !is_valid_server_name(&destination)
-        || !key.starts_with("ed25519:")
+async fn require_federated_room<'e, E>(db: E, room_id: &str) -> Result<(), MatrixError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let create: Option<Value> = sqlx::query_scalar("SELECT e.content FROM room_state rs JOIN events e ON e.event_id = rs.event_id WHERE rs.room_id = $1 AND rs.event_type = 'm.room.create' AND rs.state_key = ''")
+        .bind(room_id).fetch_optional(db).await?;
+    let create = create.ok_or(MatrixError::Forbidden)?;
+    if create
+        .get("m.federate")
+        .is_some_and(|value| value != &Value::Bool(true))
     {
-        return None;
-    }
-
-    Some(FederationAuth {
-        origin,
-        destination,
-        key,
-        signature,
-    })
-}
-
-fn require_federation_origin(
-    headers: &HeaderMap,
-    destination: &str,
-) -> Result<String, MatrixError> {
-    let auth = parse_federation_auth(headers).ok_or(MatrixError::MissingToken)?;
-    if auth.destination != destination || auth.signature.is_empty() || auth.key.is_empty() {
         return Err(MatrixError::Forbidden);
     }
-    Ok(auth.origin)
+    Ok(())
+}
+
+async fn require_server_participation<'e, E>(
+    db: E,
+    room_id: &str,
+    origin: &str,
+) -> Result<(), MatrixError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let users: Vec<String> = sqlx::query_scalar(
+        "SELECT user_id FROM room_members WHERE room_id = $1 AND membership = 'join'",
+    )
+    .bind(room_id)
+    .fetch_all(db)
+    .await?;
+    if !users
+        .iter()
+        .any(|user| user_server_name(user) == Some(origin))
+    {
+        return Err(MatrixError::Forbidden);
+    }
+    Ok(())
+}
+
+/// Until DAG auth-chain/state resolution exists, accept only events extending the
+/// locally known predecessor and authenticated current state. Reject stale forks.
+async fn require_current_event_auth(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    room_id: &str,
+    event: &Value,
+) -> Result<(), MatrixError> {
+    let mut expected = event.clone();
+    populate_event_auth(tx, room_id, &mut expected).await?;
+    for field in ["prev_events", "auth_events"] {
+        let ids = |value: &Value| -> Option<std::collections::BTreeSet<String>> {
+            let array = value.get(field)?.as_array()?;
+            let ids: std::collections::BTreeSet<String> = array
+                .iter()
+                .map(|id| id.as_str().map(str::to_owned))
+                .collect::<Option<_>>()?;
+            (ids.len() == array.len()).then_some(ids)
+        };
+        if ids(event).is_none() || ids(event) != ids(&expected) {
+            return Err(MatrixError::Forbidden);
+        }
+    }
+    if event.get("depth") != expected.get("depth") {
+        return Err(MatrixError::Forbidden);
+    }
+    Ok(())
 }
 
 fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, MatrixError> {
@@ -812,10 +644,7 @@ fn is_safe_identifier(value: &str) -> bool {
 }
 
 fn is_valid_server_name(value: &str) -> bool {
-    is_safe_identifier(value)
-        && !value.contains(['/', '\\', '?', '#', ',', '"'])
-        && !value.starts_with('.')
-        && !value.ends_with('.')
+    vauxl_federation::resolver::is_valid_server_name(value)
 }
 
 fn is_valid_room_id(value: &str) -> bool {
@@ -845,13 +674,58 @@ fn user_server_name(value: &str) -> Option<&str> {
         .map(|(_, server)| server)
 }
 
-fn event_server_name(value: &str) -> Option<&str> {
-    value.split_once(':').map(|(_, server)| server)
-}
-
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn federation_acl_checks_denies_ports_case_and_ip_literals() {
+        let acl =
+            json!({"allow":["*.example"],"deny":["BLOCKED.EXAMPLE"],"allow_ip_literals":false});
+        assert!(acl_allows(acl.clone(), "ALLOWED.EXAMPLE:8448").unwrap());
+        assert!(!acl_allows(acl.clone(), "blocked.example:443").unwrap());
+        assert!(!acl_allows(acl, "unrelated.test").unwrap());
+        for server in ["1.1.1.1:8448", "[2606:4700:4700::1111]"] {
+            assert!(!acl_allows(json!({"allow":["*"],"allow_ip_literals":false}), server).unwrap());
+        }
+        assert!(!acl_allows(json!({}), "remote.example").unwrap());
+        assert!(acl_allows(json!({"allow":"*"}), "remote.example").is_err());
+    }
+
+    #[test]
+    fn acl_ip_ban_cannot_be_bypassed_with_public_ip_aliases() {
+        let acl = json!({"allow":["*"], "allow_ip_literals":false});
+        for server in [
+            "8.8.8.8",
+            "0x08080808",
+            "134744072",
+            "010.010.010.010",
+            "8.8.2056",
+            "134744072:8448",
+        ] {
+            assert!(!acl_allows(acl.clone(), server).unwrap(), "{server}");
+        }
+        assert!(acl_allows(acl, "dns.google:8448").unwrap());
+    }
+
+    #[test]
+    fn historical_state_query_cannot_silently_return_current_state() {
+        assert!(reject_historical_state_query(
+            &"/_matrix/federation/v1/state/room?event_id=%24old"
+                .parse()
+                .unwrap()
+        )
+        .is_err());
+        assert!(reject_historical_state_query(
+            &"/_matrix/federation/v1/state/room".parse().unwrap()
+        )
+        .is_ok());
+    }
 }

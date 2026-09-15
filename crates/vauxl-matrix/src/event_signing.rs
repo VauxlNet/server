@@ -1,126 +1,131 @@
-//! Matrix event signing.
-//!
-//! Every event the homeserver creates must be signed with the server's
-//! Ed25519 key before storage and before sending to federation.
-//!
-//! Matrix signing spec:
-//! 1. Remove "unsigned" and "signatures" fields
-//! 2. Canonical JSON encode the result
-//! 3. Sign with Ed25519
-//! 4. Add signature back as {"signatures": {"server_name": {"ed25519:key_id": "base64sig"}}}
+//! Matrix room-version 11 event hashes, reference IDs, and Ed25519 signatures.
 
-use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine as _};
-use ed25519_dalek::Signer;
+use ruma::{
+    signatures::{hash_and_sign_event, reference_hash},
+    CanonicalJsonObject, RoomVersionId,
+};
 use serde_json::Value;
 
-use crate::signing_key::HomeserverSigningKey;
+use crate::{error::MatrixError, signing_key::HomeserverSigningKey};
 
-/// Signs a Matrix event JSON object in-place.
-/// Adds the "signatures" field required by the Matrix spec.
-pub fn sign_event(event: &mut Value, server_name: &str, key: &HomeserverSigningKey) {
-    // Step 1: build the object to sign (no "unsigned" or "signatures")
-    let signable = signable_content(event);
+pub use vauxl_federation::canonical_json;
 
-    // Step 2: canonical JSON — sorted keys, no extra whitespace
-    let canonical = canonical_json(&signable);
+/// Hash and sign a locally constructed v11 event, then attach its client-facing ID.
+///
+/// `event_id` is not part of a v11 wire PDU. Remove it before signing or verifying;
+/// the database and client API representation carry the derived ID separately.
+pub fn sign_event(
+    event: &mut Value,
+    server_name: &str,
+    key: &HomeserverSigningKey,
+) -> Result<(), MatrixError> {
+    let mut object: CanonicalJsonObject = serde_json::from_value(event.clone())
+        .map_err(|_| MatrixError::BadJson("Event is not Matrix canonical JSON".into()))?;
+    object.remove("event_id");
+    object.remove("signatures");
+    object.remove("hashes");
 
-    // Step 3: sign
-    let signature = key.signing_key.sign(canonical.as_bytes());
-    let sig_b64 = BASE64.encode(signature.to_bytes());
-
-    // Step 4: attach signature
-    let signatures = serde_json::json!({
-        server_name: {
-            key.key_id.clone(): sig_b64
-        }
-    });
-
-    if let Some(obj) = event.as_object_mut() {
-        obj.insert("signatures".into(), signatures);
-    }
-}
-
-/// Builds the content to be signed: the event minus "unsigned" and "signatures".
-fn signable_content(event: &Value) -> Value {
-    let mut obj = match event.as_object() {
-        Some(o) => o.clone(),
-        None => return event.clone(),
-    };
-    obj.remove("unsigned");
-    obj.remove("signatures");
-    Value::Object(obj)
-}
-
-/// Produces canonical JSON: keys sorted lexicographically, no whitespace.
-/// This is the Matrix canonical JSON format (MSC1301).
-pub fn canonical_json(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            // Sort keys
-            let mut sorted: Vec<(&String, &Value)> = map.iter().collect();
-            sorted.sort_by_key(|(k, _)| k.as_str());
-
-            let pairs: Vec<String> = sorted
-                .iter()
-                .map(|(k, v)| format!("{}:{}", json_string(k), canonical_json(v)))
-                .collect();
-
-            format!("{{{}}}", pairs.join(","))
-        }
-        Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(canonical_json).collect();
-            format!("[{}]", items.join(","))
-        }
-        Value::String(s) => json_string(s),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => "null".into(),
-    }
-}
-
-fn json_string(s: &str) -> String {
-    // Escape according to JSON spec
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 32 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    hash_and_sign_event(server_name, key, &mut object, &RoomVersionId::V11)
+        .map_err(|e| MatrixError::BadJson(format!("Cannot sign event: {e}")))?;
+    let event_id = format!(
+        "${}",
+        reference_hash(&object, &RoomVersionId::V11)
+            .map_err(|e| MatrixError::BadJson(format!("Cannot derive event ID: {e}")))?
+    );
+    object.insert("event_id".into(), event_id.into());
+    *event = serde_json::to_value(object)
+        .map_err(|e| MatrixError::Internal(format!("Cannot serialize signed event: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
+    use ruma::{
+        serde::Base64,
+        signatures::{verify_event, PublicKeyMap, Verified},
+    };
     use serde_json::json;
 
-    #[test]
-    fn test_canonical_json_sorts_keys() {
-        let val = json!({"b": 2, "a": 1, "c": 3});
-        assert_eq!(canonical_json(&val), r#"{"a":1,"b":2,"c":3}"#);
+    fn key() -> HomeserverSigningKey {
+        let signing_key = SigningKey::from_bytes(&[31; 32]);
+        HomeserverSigningKey {
+            verifying_key: signing_key.verifying_key(),
+            signing_key,
+            key_id: "ed25519:a".into(),
+        }
+    }
+
+    fn event() -> Value {
+        json!({
+            "event_id": "$temporary:example.test",
+            "room_id": "!room:example.test", "type": "m.room.message",
+            "sender": "@alice:example.test", "origin_server_ts": 123,
+            "content": {"msgtype": "m.text", "body": "hello"},
+            "prev_events": ["$previous"], "auth_events": ["$create", "$member"],
+            "depth": 3
+        })
+    }
+
+    fn keys(key: &HomeserverSigningKey) -> PublicKeyMap {
+        [(
+            "example.test".into(),
+            [(
+                key.key_id.clone(),
+                Base64::new(key.verifying_key.to_bytes().to_vec()),
+            )]
+            .into(),
+        )]
+        .into()
     }
 
     #[test]
-    fn test_canonical_json_nested() {
-        let val = json!({"z": {"b": 2, "a": 1}});
-        assert_eq!(canonical_json(&val), r#"{"z":{"a":1,"b":2}}"#);
+    fn generated_event_verifies_with_ruma_and_has_reference_id() {
+        let key = key();
+        let mut event = event();
+        sign_event(&mut event, "example.test", &key).unwrap();
+        let mut wire: CanonicalJsonObject = serde_json::from_value(event.clone()).unwrap();
+        wire.remove("event_id");
+        assert_eq!(
+            verify_event(&keys(&key), &wire, &RoomVersionId::V11).unwrap(),
+            Verified::All
+        );
+        assert_eq!(
+            event["event_id"],
+            format!("${}", reference_hash(&wire, &RoomVersionId::V11).unwrap())
+        );
+
+        event["content"]["body"] = json!("tampered");
+        let mut tampered: CanonicalJsonObject = serde_json::from_value(event).unwrap();
+        tampered.remove("event_id");
+        assert_eq!(
+            verify_event(&keys(&key), &tampered, &RoomVersionId::V11).unwrap(),
+            Verified::Signatures
+        );
     }
 
     #[test]
-    fn test_signable_removes_unsigned() {
-        let val = json!({"type": "m.room.message", "unsigned": {"age": 100}});
-        let signable = signable_content(&val);
-        assert!(signable.get("unsigned").is_none());
-        assert!(signable.get("type").is_some());
+    fn malformed_canonical_numbers_are_rejected_without_mutating_event() {
+        let key = key();
+        for number in [json!(1.5), json!(9_007_199_254_740_992_u64)] {
+            let mut event = event();
+            event["content"]["number"] = number;
+            let original = event.clone();
+            assert!(sign_event(&mut event, "example.test", &key).is_err());
+            assert_eq!(event, original);
+        }
+    }
+
+    #[test]
+    fn successive_events_with_same_content_and_timestamp_have_distinct_ids() {
+        let key = key();
+        let mut first = event();
+        sign_event(&mut first, "example.test", &key).unwrap();
+        let mut next = event();
+        next["prev_events"] = json!([first["event_id"]]);
+        next["depth"] = json!(4);
+        sign_event(&mut next, "example.test", &key).unwrap();
+        assert_ne!(first["event_id"], next["event_id"]);
     }
 }

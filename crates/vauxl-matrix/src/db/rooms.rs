@@ -2,9 +2,10 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use super::room_auth::{authorize_event, lock_room};
 use crate::{error::MatrixError, event_signing::sign_event, signing_key::HomeserverSigningKey};
 
 /// Creates a room and inserts all initial state events atomically.
@@ -25,6 +26,15 @@ pub async fn create_room_with_state(
     let now_ms = now_millis();
 
     for (event_type, state_key, content) in state_events {
+        authorize_event(
+            &mut tx,
+            room_id,
+            creator_id,
+            &event_type,
+            Some(&state_key),
+            &content,
+        )
+        .await?;
         let event_id = generate_event_id(server_name);
 
         let mut raw_event = serde_json::json!({
@@ -38,7 +48,8 @@ pub async fn create_room_with_state(
             "unsigned":         {}
         });
 
-        sign_event(&mut raw_event, server_name, signing_key);
+        populate_event_auth(&mut tx, room_id, &mut raw_event).await?;
+        sign_event(&mut raw_event, server_name, signing_key)?;
 
         let event_id = raw_event["event_id"].as_str().unwrap().to_owned();
         let ev_type = raw_event["type"].as_str().unwrap().to_owned();
@@ -77,19 +88,22 @@ pub async fn create_room_with_state(
         )
         .execute(&mut *tx)
         .await?;
-    }
 
-    sqlx::query!(
-        r#"
-        INSERT INTO room_members (room_id, user_id, membership)
-        VALUES ($1, $2, 'join')
-        ON CONFLICT (room_id, user_id) DO UPDATE SET membership = 'join'
-        "#,
-        room_id,
-        creator_id,
-    )
-    .execute(&mut *tx)
-    .await?;
+        if ev_type == "m.room.member" {
+            let membership = ev_content["membership"]
+                .as_str()
+                .ok_or(MatrixError::Forbidden)?;
+            sqlx::query(
+                "INSERT INTO room_members (room_id, user_id, membership) VALUES ($1, $2, $3)
+                 ON CONFLICT (room_id, user_id) DO UPDATE SET membership = EXCLUDED.membership",
+            )
+            .bind(room_id)
+            .bind(&ev_key)
+            .bind(membership)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
 
     tx.commit().await?;
     Ok(())
@@ -107,6 +121,17 @@ pub async fn put_room_state_event(
     server_name: &str,
     signing_key: &HomeserverSigningKey,
 ) -> Result<String, MatrixError> {
+    let mut tx = pool.begin().await?;
+    lock_room(&mut tx, room_id).await?;
+    authorize_event(
+        &mut tx,
+        room_id,
+        sender,
+        event_type,
+        Some(state_key),
+        &content,
+    )
+    .await?;
     let now_ms = now_millis();
     let event_id = generate_event_id(server_name);
 
@@ -121,12 +146,11 @@ pub async fn put_room_state_event(
         "unsigned":         {}
     });
 
-    sign_event(&mut raw_event, server_name, signing_key);
+    populate_event_auth(&mut tx, room_id, &mut raw_event).await?;
+    sign_event(&mut raw_event, server_name, signing_key)?;
 
     let event_id = raw_event["event_id"].as_str().unwrap().to_owned();
     let ev_content = raw_event["content"].clone();
-
-    let mut tx = pool.begin().await?;
 
     sqlx::query!(
         r#"
@@ -165,7 +189,7 @@ pub async fn put_room_state_event(
         let membership = ev_content
             .get("membership")
             .and_then(|v| v.as_str())
-            .unwrap_or("leave");
+            .ok_or(MatrixError::Forbidden)?;
 
         sqlx::query!(
             r#"
@@ -195,6 +219,80 @@ pub async fn put_room_event(
     server_name: &str,
     signing_key: &HomeserverSigningKey,
 ) -> Result<String, MatrixError> {
+    put_room_event_inner(
+        pool,
+        room_id,
+        event_type,
+        sender,
+        None,
+        content,
+        server_name,
+        signing_key,
+    )
+    .await
+    .map(|(event_id, _)| event_id)
+}
+
+/// Atomically authorize and send once for an endpoint-scoped client transaction.
+/// Returns the stored event ID and whether this call inserted a new event.
+#[allow(clippy::too_many_arguments)]
+pub async fn put_room_event_idempotent(
+    pool: &PgPool,
+    room_id: &str,
+    event_type: &str,
+    sender: &str,
+    device_id: &str,
+    txn_id: &str,
+    content: Value,
+    server_name: &str,
+    signing_key: &HomeserverSigningKey,
+) -> Result<(String, bool), MatrixError> {
+    put_room_event_inner(
+        pool,
+        room_id,
+        event_type,
+        sender,
+        Some((device_id, txn_id)),
+        content,
+        server_name,
+        signing_key,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn put_room_event_inner(
+    pool: &PgPool,
+    room_id: &str,
+    event_type: &str,
+    sender: &str,
+    transaction: Option<(&str, &str)>,
+    content: Value,
+    server_name: &str,
+    signing_key: &HomeserverSigningKey,
+) -> Result<(String, bool), MatrixError> {
+    let mut tx = pool.begin().await?;
+    lock_room(&mut tx, room_id).await?;
+    authorize_event(&mut tx, room_id, sender, event_type, None, &content).await?;
+    // The room lock serializes retries for this endpoint scope. Check after
+    // authorization so a departed or demoted sender cannot reuse a transaction.
+    let scoped_txn = transaction.map(|(_, txn_id)| {
+        serde_json::to_string(&("room.send", room_id, event_type, txn_id))
+            .expect("string tuple is serializable")
+    });
+    if let (Some((device_id, _)), Some(scoped_txn)) = (transaction, scoped_txn.as_ref()) {
+        let existing: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT event_id FROM transaction_ids WHERE user_id = $1 AND device_id = $2 AND txn_id = $3",
+        )
+        .bind(sender).bind(device_id).bind(scoped_txn)
+        .fetch_optional(&mut *tx).await?;
+        if let Some(event_id) = existing {
+            let event_id = event_id
+                .ok_or_else(|| MatrixError::Internal("Transaction has no event ID".into()))?;
+            tx.commit().await?;
+            return Ok((event_id, false));
+        }
+    }
     let now_ms = now_millis();
     let event_id = generate_event_id(server_name);
 
@@ -208,7 +306,8 @@ pub async fn put_room_event(
         "unsigned":         {}
     });
 
-    sign_event(&mut raw_event, server_name, signing_key);
+    populate_event_auth(&mut tx, room_id, &mut raw_event).await?;
+    sign_event(&mut raw_event, server_name, signing_key)?;
 
     let event_id = raw_event["event_id"].as_str().unwrap().to_owned();
     let ev_content = raw_event["content"].clone();
@@ -227,20 +326,31 @@ pub async fn put_room_event(
         ev_content,
         raw_event,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    Ok(event_id)
+    if let (Some((device_id, _)), Some(scoped_txn)) = (transaction, scoped_txn.as_ref()) {
+        sqlx::query(
+            "INSERT INTO transaction_ids (user_id, device_id, txn_id, event_id) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(sender).bind(device_id).bind(scoped_txn).bind(&event_id)
+        .execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok((event_id, true))
 }
 
 /// Checks that a user is a joined member of a room.
-pub async fn assert_joined(pool: &PgPool, room_id: &str, user_id: &str) -> Result<(), MatrixError> {
+pub async fn assert_joined<'e, E>(db: E, room_id: &str, user_id: &str) -> Result<(), MatrixError>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
     let row = sqlx::query!(
         "SELECT membership FROM room_members WHERE room_id = $1 AND user_id = $2",
         room_id,
         user_id,
     )
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await?;
 
     match row.as_ref().map(|r| r.membership.as_str()) {
@@ -250,7 +360,10 @@ pub async fn assert_joined(pool: &PgPool, room_id: &str, user_id: &str) -> Resul
 }
 
 /// Returns all current state events for a room.
-pub async fn get_full_room_state(pool: &PgPool, room_id: &str) -> Result<Vec<Value>, MatrixError> {
+pub async fn get_full_room_state<'e, E>(db: E, room_id: &str) -> Result<Vec<Value>, MatrixError>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
     let rows = sqlx::query!(
         r#"
         SELECT e.raw_event
@@ -260,7 +373,7 @@ pub async fn get_full_room_state(pool: &PgPool, room_id: &str) -> Result<Vec<Val
         "#,
         room_id,
     )
-    .fetch_all(pool)
+    .fetch_all(db)
     .await?;
 
     Ok(rows
@@ -273,11 +386,15 @@ pub async fn get_full_room_state(pool: &PgPool, room_id: &str) -> Result<Vec<Val
 pub async fn get_room_messages(
     pool: &PgPool,
     room_id: &str,
+    user_id: &str,
     from: Option<&str>,
     to: Option<&str>,
     dir: &str, // "f" (forward) or "b" (backward)
     limit: i64,
 ) -> Result<(Vec<Value>, Option<String>), MatrixError> {
+    let mut tx = pool.begin().await?;
+    lock_room(&mut tx, room_id).await?;
+    assert_joined(&mut *tx, room_id, user_id).await?;
     // Parse pagination tokens — we use origin_ts as the cursor
     let from_ts: Option<i64> = from
         .and_then(|t| t.strip_prefix('t'))
@@ -309,7 +426,7 @@ pub async fn get_room_messages(
             anchor,
             limit + 1,
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await?;
         rows
     } else {
@@ -329,7 +446,7 @@ pub async fn get_room_messages(
             anchor,
             limit + 1,
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await?;
         rows
     };
@@ -350,7 +467,68 @@ pub async fn get_room_messages(
         .filter_map(|r| serde_json::from_value(r.raw_event.clone()).ok())
         .collect();
 
+    let result =
+        super::history_visibility::filter_for_user(&mut tx, room_id, result, user_id).await?;
+    tx.commit().await?;
     Ok((result, end_token))
+}
+
+/// Add graph references for a local event while holding the room write lock.
+/// The supported event model is a single accepted chain, not state resolution.
+pub async fn populate_event_auth(
+    tx: &mut Transaction<'_, Postgres>,
+    room_id: &str,
+    event: &mut Value,
+) -> Result<(), MatrixError> {
+    let previous: Option<(String, Value)> = sqlx::query_as(
+        "SELECT event_id, raw_event FROM events WHERE room_id = $1
+         ORDER BY COALESCE((raw_event->>'depth')::bigint, 0) DESC, origin_ts DESC, event_id DESC LIMIT 1",
+    )
+    .bind(room_id).fetch_optional(&mut **tx).await?;
+    let (prev_events, depth) = match previous {
+        Some((id, raw)) => {
+            let depth = raw.get("depth").and_then(Value::as_u64).unwrap_or(0);
+            let next = depth
+                .checked_add(1)
+                .filter(|n| *n <= 9_007_199_254_740_991)
+                .ok_or(MatrixError::Forbidden)?;
+            (serde_json::json!([id]), next)
+        }
+        None => (serde_json::json!([]), 1),
+    };
+    let event_type = event["type"].as_str().ok_or(MatrixError::Forbidden)?;
+    let sender = event["sender"].as_str().ok_or(MatrixError::Forbidden)?;
+    let target = if event_type == "m.room.member" {
+        event["state_key"].as_str()
+    } else {
+        None
+    };
+    let needs_join_rules = event_type == "m.room.member"
+        && matches!(
+            event["content"]["membership"].as_str(),
+            Some("join" | "invite")
+        );
+    let auth_events: Vec<String> = if event_type == "m.room.create" {
+        Vec::new()
+    } else {
+        sqlx::query_scalar(
+            "SELECT event_id FROM room_state WHERE room_id = $1 AND (
+             (state_key = '' AND event_type IN ('m.room.create', 'm.room.power_levels')) OR
+             (event_type = 'm.room.member' AND (state_key = $2 OR state_key = $3)) OR
+             (event_type = 'm.room.join_rules' AND state_key = '' AND $4))
+             ORDER BY event_id",
+        )
+        .bind(room_id)
+        .bind(sender)
+        .bind(target)
+        .bind(needs_join_rules)
+        .fetch_all(&mut **tx)
+        .await?
+    };
+    event["prev_events"] = prev_events;
+    event["depth"] = depth.into();
+    event["auth_events"] = serde_json::json!(auth_events);
+    Ok(())
 }
 
 pub fn generate_event_id(server_name: &str) -> String {

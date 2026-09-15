@@ -61,7 +61,6 @@ async fn build_sync_response(
 ) -> Result<Value, MatrixError> {
     let next_batch = get_next_batch(&state.redis, user_id).await?;
     let rooms = get_user_rooms(&state.db, user_id).await?;
-    let to_device_events = pop_to_device_messages(&state.db, user_id, device_id).await?;
 
     // Presence events for all joined rooms
     let mut all_presence: Vec<Value> = vec![];
@@ -95,6 +94,9 @@ async fn build_sync_response(
         seen.insert(sender)
     });
 
+    // Build every fallible room section before consuming queued device messages.
+    let to_device_events = pop_to_device_messages(&state.db, user_id, device_id).await?;
+
     Ok(json!({
         "next_batch": next_batch,
         "rooms": {
@@ -113,12 +115,20 @@ async fn build_sync_response(
 async fn build_joined_room(
     state: &SharedState,
     room_id: &str,
-    _user_id: &str,
+    user_id: &str,
     since: u64,
 ) -> Result<Value, MatrixError> {
-    let state_events = get_room_state(&state.db, room_id).await?;
-    let timeline_events = get_room_timeline(&state.db, room_id, since).await?;
-    let limited = false;
+    let mut tx = state.db.begin().await?;
+    crate::db::room_auth::lock_room(&mut tx, room_id).await?;
+    crate::db::assert_joined(&mut *tx, room_id, user_id).await?;
+    let state_events = get_room_state(&mut *tx, room_id).await?;
+    let (timeline_events, limited) = match get_room_timeline(&mut tx, room_id, user_id, since).await
+    {
+        Ok(events) => (events, false),
+        Err(MatrixError::HistoryUnavailable) => (Vec::new(), true),
+        Err(error) => return Err(error),
+    };
+    tx.commit().await?;
 
     // Ephemeral: typing + receipts
     let typing_users = get_typing_users(&state.redis, room_id).await;

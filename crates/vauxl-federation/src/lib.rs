@@ -46,3 +46,9 @@ fn json_string(value: &str) -> String {
     output.push('"');
     output
 }
+
+/// Matrix canonical JSON rejects floats and integers outside the interoperable range.
+pub fn signing_json(value: &Value) -> Result<String, String> {
+    let canonical = ruma::CanonicalJsonValue::try_from(value.clone()).map_err(|e| e.to_string())?;
+    serde_json::to_string(&canonical).map_err(|e| e.to_string())
+}
