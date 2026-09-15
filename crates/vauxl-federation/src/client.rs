@@ -17,7 +17,7 @@ pub async fn send_federation_request(
     signing_key: &ed25519_dalek::SigningKey,
     key_id: &str,
 ) -> Result<reqwest::Response, String> {
-    let resolved = resolve_server_name(destination).await;
+    let resolved = resolve_server_name(destination).await?;
 
     let url = format!("https://{}:{}{}", resolved.host, resolved.port, path);
 
@@ -25,10 +25,7 @@ pub async fn send_federation_request(
     let auth_header =
         build_auth_header(method, origin, destination, path, body, signing_key, key_id)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::resolver::http_client(Duration::from_secs(30))?;
 
     let mut req = match method {
         "GET" => client.get(&url),
@@ -59,6 +56,11 @@ fn build_auth_header(
     signing_key: &ed25519_dalek::SigningKey,
     key_id: &str,
 ) -> Result<String, String> {
+    if !crate::resolver::is_valid_server_name(origin)
+        || !crate::resolver::is_valid_server_name(destination)
+    {
+        return Err("Invalid server name".into());
+    }
     // Build the object to sign
     let mut to_sign = serde_json::json!({
         "method":      method,
@@ -72,7 +74,7 @@ fn build_auth_header(
     }
 
     // Canonical JSON
-    let canonical = crate::canonical_json(&to_sign);
+    let canonical = crate::signing_json(&to_sign)?;
 
     // Sign
     let sig = signing_key.sign(canonical.as_bytes());
@@ -82,45 +84,4 @@ fn build_auth_header(
         r#"X-Matrix origin="{}",destination="{}",key="{}",sig="{}""#,
         origin, destination, key_id, sig_b64
     ))
-}
-
-/// Simple canonical JSON for federation signing.
-fn canonical_json_inner(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let mut sorted: Vec<(&String, &Value)> = map.iter().collect();
-            sorted.sort_by_key(|(k, _)| k.as_str());
-            let pairs: Vec<String> = sorted
-                .iter()
-                .map(|(k, v)| format!("{}:{}", json_str(k), canonical_json_inner(v)))
-                .collect();
-            format!("{{{}}}", pairs.join(","))
-        }
-        Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(canonical_json_inner).collect();
-            format!("[{}]", items.join(","))
-        }
-        Value::String(s) => json_str(s),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => "null".into(),
-    }
-}
-
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 32 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }

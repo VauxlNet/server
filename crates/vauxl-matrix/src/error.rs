@@ -22,6 +22,9 @@ pub enum MatrixError {
     #[error("Forbidden")]
     Forbidden,
 
+    #[error("Room history does not have a verifiable event order")]
+    HistoryUnavailable,
+
     #[error("User ID already taken")]
     UserInUse,
 
@@ -49,7 +52,7 @@ impl MatrixError {
         match self {
             Self::MissingToken => "M_MISSING_TOKEN",
             Self::UnknownToken => "M_UNKNOWN_TOKEN",
-            Self::Forbidden => "M_FORBIDDEN",
+            Self::Forbidden | Self::HistoryUnavailable => "M_FORBIDDEN",
             Self::UserInUse => "M_USER_IN_USE",
             Self::InvalidUsername => "M_INVALID_USERNAME",
             Self::WeakPassword => "M_WEAK_PASSWORD",
@@ -63,7 +66,7 @@ impl MatrixError {
     fn status(&self) -> StatusCode {
         match self {
             Self::MissingToken | Self::UnknownToken => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::HistoryUnavailable => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::LimitExceeded => StatusCode::TOO_MANY_REQUESTS,
             Self::UserInUse | Self::InvalidUsername | Self::WeakPassword | Self::BadJson(_) => {

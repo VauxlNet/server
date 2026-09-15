@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine as _};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use std::path::Path;
 
@@ -16,6 +16,13 @@ pub struct HomeserverSigningKey {
     pub verifying_key: VerifyingKey,
     /// Key ID used in Matrix signatures, e.g. "ed25519:a"
     pub key_id: String,
+}
+
+impl ruma::signatures::KeyPair for HomeserverSigningKey {
+    fn sign(&self, message: &[u8]) -> ruma::signatures::Signature {
+        ruma::signatures::Signature::new(&self.key_id, &self.signing_key.sign(message).to_bytes())
+            .expect("locally generated Ed25519 key identifier is valid")
+    }
 }
 
 impl HomeserverSigningKey {

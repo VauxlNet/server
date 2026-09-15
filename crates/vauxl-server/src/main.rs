@@ -100,6 +100,18 @@ async fn main() -> Result<()> {
         wake_tx,
     });
 
+    let app = router(state);
+
+    let addr = format!("{}:{}", cfg.server.listen_address, cfg.server.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!(address = %addr, "Listening");
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn router(state: vauxl_matrix::state::SharedState) -> Router {
+    let db = state.db.clone();
     // ── Cors ────────────────────────────────────────────────────────────
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -107,7 +119,7 @@ async fn main() -> Result<()> {
         .allow_headers(Any);
 
     // ── Router ────────────────────────────────────────────────────────────
-    let app = Router::new()
+    Router::new()
         // Discovery
         .route("/.well-known/matrix/client", get(well_known_client))
         .route("/.well-known/matrix/server", get(well_known_server))
@@ -302,15 +314,11 @@ async fn main() -> Result<()> {
         .route("/_vauxl/health", get(health))
         .with_state(state)
         .layer(middleware::from_fn_with_state(db, inject_db))
-        .layer(cors);
-
-    let addr = format!("{}:{}", cfg.server.listen_address, cfg.server.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(address = %addr, "Listening");
-
-    axum::serve(listener, app).await?;
-    Ok(())
+        .layer(cors)
 }
+
+#[cfg(test)]
+mod security_tests;
 
 async fn health() -> &'static str {
     "ok"

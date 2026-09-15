@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::{
     auth::AuthenticatedUser,
     db::{
-        assert_joined, check_and_store_txn, create_room_with_state, get_full_room_state,
-        get_room_messages, put_room_event, put_room_state_event,
+        assert_joined, create_room_with_state, get_full_room_state, get_room_messages,
+        put_room_event_idempotent, put_room_state_event,
     },
     error::MatrixError,
     state::{SharedState, WakeEvent},
@@ -73,7 +73,7 @@ pub async fn create_room(
         (
             "m.room.power_levels".into(),
             "".into(),
-            build_power_levels(creator, body.power_level_content_override.as_ref()),
+            build_power_levels(creator, None),
         ),
         (
             "m.room.join_rules".into(),
@@ -108,6 +108,21 @@ pub async fn create_room(
         }
     }
 
+    // Apply a requested final power configuration after room setup, so a
+    // deliberate creator demotion does not prevent the setup events.
+    if let Some(override_content) = &body.power_level_content_override {
+        if !override_content.is_object() {
+            return Err(MatrixError::BadJson(
+                "Power levels must be an object".into(),
+            ));
+        }
+        state_events.push((
+            "m.room.power_levels".into(),
+            "".into(),
+            build_power_levels(creator, Some(override_content)),
+        ));
+    }
+
     create_room_with_state(
         &state.db,
         &room_id,
@@ -128,8 +143,6 @@ pub async fn send_state_event(
     Path((room_id, event_type, state_key)): Path<(String, String, String)>,
     Json(content): Json<Value>,
 ) -> Result<Json<Value>, MatrixError> {
-    assert_joined(&state.db, &room_id, &auth.user_id).await?;
-
     let event_id = put_room_state_event(
         &state.db,
         &room_id,
@@ -154,8 +167,6 @@ pub async fn send_state_event_no_key(
     Path((room_id, event_type)): Path<(String, String)>,
     Json(content): Json<Value>,
 ) -> Result<Json<Value>, MatrixError> {
-    assert_joined(&state.db, &room_id, &auth.user_id).await?;
-
     let event_id = put_room_state_event(
         &state.db,
         &room_id,
@@ -180,25 +191,22 @@ pub async fn send_message_event(
     Path((room_id, event_type, txn_id)): Path<(String, String, String)>,
     Json(content): Json<Value>,
 ) -> Result<Json<Value>, MatrixError> {
-    assert_joined(&state.db, &room_id, &auth.user_id).await?;
-
-    let is_new = check_and_store_txn(&state.db, &auth.user_id, &auth.device_id, &txn_id).await?;
-
-    if !is_new {
-        tracing::debug!(txn_id = %txn_id, "Duplicate txn — skipping");
-        return Ok(Json(json!({ "event_id": format!("$dup:{}", txn_id) })));
-    }
-
-    let event_id = put_room_event(
+    let (event_id, is_new) = put_room_event_idempotent(
         &state.db,
         &room_id,
         &event_type,
         &auth.user_id,
+        &auth.device_id,
+        &txn_id,
         content,
         &state.config.server.server_name,
         &state.signing_key,
     )
     .await?;
+
+    if !is_new {
+        return Ok(Json(json!({ "event_id": event_id })));
+    }
 
     // Wake any long-polling /sync handlers for this room
     let _ = state.wake_tx.send(WakeEvent {
@@ -273,6 +281,7 @@ pub async fn get_room_messages_handler(
     let (events, end) = get_room_messages(
         &state.db,
         &room_id,
+        &auth.user_id,
         query.from.as_deref(),
         query.to.as_deref(),
         dir,

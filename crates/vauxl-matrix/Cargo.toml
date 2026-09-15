@@ -23,9 +23,9 @@ uuid          = { version = "1", features = ["v4"] }
 sha2          = "0.10"
 serde_urlencoded = "0.7"
 redis = { workspace = true}
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 urlencoding = "2.1"
-#vauxl-federation = { path = "../vauxl-federation/" }
+vauxl-federation = { path = "../vauxl-federation" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
